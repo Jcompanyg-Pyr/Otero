@@ -166,3 +166,15 @@ svg.quad { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 2; 
 @media (min-width: 700px) {
   .sheet { left: auto; width: 420px; right: 12px; bottom: calc(var(--tabh) + 12px); border-radius: 18px; }
 }
+
+/* --- Ubicación: tu posición vs. punto seleccionado --- */
+.me-dot.approx { background: transparent; border: 3px dashed #2a7ae4; box-shadow: none; }
+.me-dot.stale { background: #8a96a3; box-shadow: 0 0 0 6px rgba(138,150,163,.25); }
+.fixline { margin: 2px 0 4px; }
+.note.warn { background: #fff4e0; border-color: #e3a646; color: #5b3d00; }
+.compass .from { text-align: center; padding: 0 16px; opacity: .85; min-height: 1.2em; }
+.btn.fav.on { background: #f1c35b; color: #1d3b2f; }
+/* --- Aviso de versión nueva --- */
+#updbar { position: fixed; left: 10px; right: 10px; top: calc(var(--sat) + 52px); z-index: 1200; display: flex; gap: 8px; align-items: center; padding: 10px 12px; border-radius: 14px; background: #1d3b2f; color: #fff; box-shadow: 0 6px 20px rgba(0,0,0,.25); }
+#updbar span { flex: 1; font-size: 15px; }
+#sq { padding: 10px 12px; border-radius: 10px; border: 1px solid #ccd3cf; }

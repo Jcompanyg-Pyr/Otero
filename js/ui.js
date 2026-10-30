@@ -123,6 +123,7 @@ export function pickFiles({ accept = 'image/*', multiple = false, capture = null
     if (capture) i.setAttribute('capture', capture);
     i.style.display = 'none';
     i.onchange = () => { res([...i.files]); i.remove(); };
+    i.oncancel = () => { res([]); i.remove(); }; // si cancelas, que no se quede esperando
     document.body.append(i);
     i.click();
   });
