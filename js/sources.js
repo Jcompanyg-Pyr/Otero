@@ -1,29 +1,75 @@
 // Fuentes de datos públicas y gratuitas. Ninguna necesita cuenta salvo Pl@ntNet (opcional).
 import { assembleRings, simplify, destination } from './geo.js';
 
-const OVERPASS = ['https://overpass-api.de/api/interpreter', 'https://overpass.private.coffee/api/interpreter'];
+const OVERPASS = ['https://overpass-api.de/api/interpreter', 'https://overpass.kumi.systems/api/interpreter', 'https://overpass.private.coffee/api/interpreter'];
 const IGME_REST = 'https://mapas.igme.es/gis/rest/services/Cartografia_Geologica/IGME_MAGNA_50/MapServer';
 
 export const online = () => navigator.onLine !== false;
 
-async function getJSON(url, opts = {}, ms = 25000) {
-  const ctl = new AbortController();
-  const t = setTimeout(() => ctl.abort(), ms);
-  try {
-    const r = await fetch(url, { ...opts, signal: ctl.signal });
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    return await r.json();
-  } finally { clearTimeout(t); }
+// Error de una fuente de datos. kind: 'timeout' | 'http' | 'busy' | 'bad' | 'network' | 'offline'
+export class SourceError extends Error {
+  constructor(kind, msg, status) { super(msg); this.kind = kind; this.status = status; }
+}
+export function explainError(e) {
+  switch (e?.kind) {
+    case 'offline': return 'Sin cobertura';
+    case 'timeout': return 'El servidor no ha respondido a tiempo';
+    case 'busy': return 'El servidor está saturado ahora mismo';
+    case 'http': return `El servidor respondió con un error (${e.status})`;
+    case 'bad': return 'El servidor devolvió una respuesta incompleta';
+    default: return 'No se pudo conectar con el servidor';
+  }
 }
 
-export async function overpass(query, ms = 60000) {
-  let lastErr;
-  for (const ep of OVERPASS) {
-    try {
-      return await getJSON(ep, { method: 'POST', body: 'data=' + encodeURIComponent(query), headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }, ms);
-    } catch (e) { lastErr = e; }
-  }
-  throw lastErr;
+// fetch + JSON con tiempo máximo. También se puede cancelar desde fuera con opts.signal.
+export async function getJSON(url, opts = {}, ms = 25000) {
+  if (!online()) throw new SourceError('offline', 'Sin cobertura');
+  const ctl = new AbortController(), outer = opts.signal;
+  const onOuter = () => ctl.abort();
+  outer?.addEventListener('abort', onOuter);
+  let timedOut = false;
+  const t = setTimeout(() => { timedOut = true; ctl.abort(); }, ms);
+  try {
+    const r = await fetch(url, { ...opts, signal: ctl.signal });
+    if (!r.ok) throw new SourceError(r.status === 429 || r.status === 504 ? 'busy' : 'http', `HTTP ${r.status}`, r.status);
+    try { return await r.json(); } catch (e) { if (ctl.signal.aborted) throw e; throw new SourceError('bad', 'Respuesta no válida'); }
+  } catch (e) {
+    if (e instanceof SourceError) throw e;
+    if (timedOut) throw new SourceError('timeout', 'Tiempo agotado');
+    if (outer?.aborted) throw e; // cancelado por quien llamó
+    throw new SourceError('network', e.message || 'Error de red');
+  } finally { clearTimeout(t); outer?.removeEventListener('abort', onOuter); }
+}
+
+// Overpass con varios servidores: empieza por el primero y, si en `stagger` ms no ha contestado
+// (o falla antes), lanza también el siguiente. Gana el primero que responde bien; los demás se cancelan.
+export async function overpass(query, ms = 25000, { signal, stagger = 5000, endpoints = OVERPASS } = {}) {
+  if (!online()) throw new SourceError('offline', 'Sin cobertura');
+  const ctls = endpoints.map(() => new AbortController());
+  const stopAll = () => ctls.forEach(c => c.abort());
+  signal?.addEventListener('abort', stopAll);
+  const errors = [], kick = [];
+  try {
+    return await Promise.any(endpoints.map(async (ep, i) => {
+      if (i) await new Promise(r => {
+        const t = setTimeout(r, i * stagger);
+        kick[i] = () => { clearTimeout(t); r(); };
+        ctls[i].signal.addEventListener('abort', kick[i]); // cancelado: no esperar su turno
+      });
+      if (ctls[i].signal.aborted) throw new SourceError('network', 'Cancelado');
+      try {
+        const d = await getJSON(ep, { method: 'POST', body: 'data=' + encodeURIComponent(query), headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, signal: ctls[i].signal }, ms);
+        // Overpass a veces responde 200 con un aviso de error y resultados a medias
+        if (d?.remark && /runtime error|timed out|out of memory/i.test(d.remark)) throw new SourceError('busy', d.remark);
+        if (!Array.isArray(d?.elements)) throw new SourceError('bad', 'Respuesta sin datos');
+        ctls.forEach((c, j) => j !== i && c.abort());
+        return d;
+      } catch (e) { errors.push(e); kick[i + 1]?.(); throw e; }
+    }));
+  } catch (e) {
+    if (signal?.aborted) throw new DOMException('Cancelado', 'AbortError');
+    throw errors.find(x => x.kind === 'busy') || errors.find(x => x.kind === 'timeout') || errors[0] || new SourceError('network', 'Sin respuesta');
+  } finally { signal?.removeEventListener('abort', stopAll); }
 }
 
 // --- Clasificación de elementos de OSM a algo legible ---
@@ -42,7 +88,7 @@ const KIND = [
 ];
 export function kindOf(tags) { for (const [f, k] of KIND) if (f(tags)) return k; return 'lugar'; }
 
-function parsePlaces(elements) {
+export function parsePlaces(elements) {
   const places = [], waters = [];
   for (const el of elements) {
     const t = el.tags || {};
@@ -84,19 +130,19 @@ export async function zoneData(b, onStep = () => { }) {
   const bb = `${b.s},${b.w},${b.n},${b.e}`;
   onStep('Nombres de picos, masías, fuentes y barrancos');
   const q1 = `[out:json][timeout:90];(${PLACE_FILTER(bb)});out center tags;way["waterway"~"^(river|stream)$"]["name"](${bb});out geom;`;
-  const d1 = await overpass(q1, 100000);
+  const d1 = await overpass(q1, 100000, { stagger: 40000 });
   const { places, waters } = parsePlaces(d1.elements);
 
   onStep('Términos municipales y comarcas');
   const q2 = `[out:json][timeout:120];rel["boundary"="administrative"]["admin_level"~"^(7|8)$"](${bb});out geom;`;
   let boundaries = [];
-  try { boundaries = parseBoundaries((await overpass(q2, 130000)).elements); } catch (e) { console.warn('límites', e); }
+  try { boundaries = parseBoundaries((await overpass(q2, 130000, { stagger: 40000 })).elements); } catch (e) { console.warn('límites', e); }
 
   onStep('Picos lejanos (para la brújula, 50 km)');
   const cLat = (b.s + b.n) / 2, cLon = (b.w + b.e) / 2;
   const q3 = `[out:json][timeout:90];node["natural"~"^(peak|volcano)$"]["name"](around:50000,${cLat},${cLon});out;`;
   let farPeaks = [];
-  try { farPeaks = parsePlaces((await overpass(q3, 100000)).elements).places.filter(p => p.ele); } catch (e) { console.warn('picos', e); }
+  try { farPeaks = parsePlaces((await overpass(q3, 100000, { stagger: 40000 })).elements).places.filter(p => p.ele); } catch (e) { console.warn('picos', e); }
 
   onStep('Provincia y país');
   let admin = {};
@@ -105,9 +151,24 @@ export async function zoneData(b, onStep = () => { }) {
 }
 
 // Términos municipales en un punto (en línea)
+// Si OpenStreetMap (Overpass) no responde, Photon da al menos municipio, provincia/región y país.
 export async function adminAt(lat, lon) {
-  const q = `[out:json][timeout:25];is_in(${lat},${lon})->.a;rel(pivot.a)["boundary"="administrative"]["admin_level"~"^(2|4|6|7|8)$"];out tags;`;
-  const d = await overpass(q, 30000);
+  try { return await adminOverpass(lat, lon); }
+  catch (e) {
+    const r = await adminPhoton(lat, lon).catch(() => null);
+    if (r && (r.municipio || r.pais)) return r;
+    throw e;
+  }
+}
+export async function adminPhoton(lat, lon) {
+  const d = await getJSON(`https://photon.komoot.io/reverse?lat=${lat.toFixed(5)}&lon=${lon.toFixed(5)}&limit=1`, {}, 8000);
+  const p = d?.features?.[0]?.properties;
+  if (!p) return {};
+  return { municipio: p.city || p.town || p.village || p.municipality || null, provincia: p.county || null, region: p.state || null, pais: p.country || null, aprox: true };
+}
+async function adminOverpass(lat, lon) {
+  const q = `[out:json][timeout:15];is_in(${lat},${lon})->.a;rel(pivot.a)["boundary"="administrative"]["admin_level"~"^(2|4|6|7|8)$"];out tags;`;
+  const d = await overpass(q, 15000, { stagger: 4000 });
   const out = {};
   for (const el of d.elements) {
     const l = +el.tags.admin_level, n = el.tags['name:es'] || el.tags.name;
@@ -122,13 +183,111 @@ export async function adminAt(lat, lon) {
 
 export async function placesAround(lat, lon, radius = 5000) {
   const area = `around:${radius},${lat},${lon}`;
-  const q = `[out:json][timeout:40];(${PLACE_FILTER(area)});out center tags;way["waterway"~"^(river|stream)$"]["name"](around:2000,${lat},${lon});out geom;`;
-  return parsePlaces((await overpass(q, 45000)).elements);
+  const q = `[out:json][timeout:20];(${PLACE_FILTER(area)});out center tags;way["waterway"~"^(river|stream)$"]["name"](around:2000,${lat},${lon});out geom;`;
+  return parsePlaces((await overpass(q, 20000, { stagger: 4000 })).elements);
 }
 
-export async function peaksAround(lat, lon, radius = 50000) {
-  const q = `[out:json][timeout:60];node["natural"~"^(peak|volcano)$"]["name"](around:${radius},${lat},${lon});out;`;
-  return parsePlaces((await overpass(q, 65000)).elements).places.filter(p => p.ele);
+// Picos con nombre y altitud alrededor de un punto.
+// Primero OpenStreetMap (Overpass); si no responde, Wikidata (menos picos, pero cobertura mundial).
+// Devuelve { peaks, source }. Si ninguna fuente responde, lanza el error (no es lo mismo que «no hay picos»).
+export let OSM_BUDGET_MS = 15000;
+export const _setOsmBudget = ms => { OSM_BUDGET_MS = ms; }; // solo para las pruebas
+export async function peaksAround(lat, lon, radius = 50000, { signal, onStep } = {}) {
+  const q = `[out:json][timeout:25];node["natural"~"^(peak|volcano)$"]["name"]["ele"](around:${radius},${lat},${lon});out qt;`;
+  let osmErr;
+  // Como mucho 15 s para OpenStreetMap (entre todos sus servidores); después, la alternativa
+  const budget = new AbortController();
+  const onOuter = () => budget.abort();
+  signal?.addEventListener('abort', onOuter);
+  const timer = setTimeout(() => budget.abort(), OSM_BUDGET_MS);
+  try {
+    onStep?.('Consultando OpenStreetMap…');
+    const peaks = parsePlaces((await overpass(q, 15000, { signal: budget.signal, stagger: 4000 })).elements).places.filter(p => Number.isFinite(p.ele));
+    return { peaks, source: 'OpenStreetMap' };
+  } catch (e) {
+    if (signal?.aborted) throw e;
+    osmErr = e instanceof SourceError ? e : new SourceError('timeout', 'OpenStreetMap no respondió a tiempo');
+  } finally { clearTimeout(timer); signal?.removeEventListener('abort', onOuter); }
+  try {
+    onStep?.('OpenStreetMap no responde; probando con Wikidata…');
+    return { peaks: await wikidataPeaks(lat, lon, radius / 1000, { signal }), source: 'Wikidata', osmError: osmErr };
+  } catch (e) {
+    if (signal?.aborted) throw e;
+    throw osmErr;
+  }
+}
+
+// Montañas de Wikidata con coordenadas y altitud (P2044) en un radio (km)
+export async function wikidataPeaks(lat, lon, km, { signal } = {}) {
+  const sparql = `SELECT ?item ?itemLabel ?coord ?ele WHERE {
+    SERVICE wikibase:around { ?item wdt:P625 ?coord . bd:serviceParam wikibase:center "Point(${lon} ${lat})"^^geo:wktLiteral . bd:serviceParam wikibase:radius "${Math.min(km, 100)}" . }
+    ?item wdt:P31/wdt:P279* wd:Q8502 . ?item wdt:P2044 ?ele .
+    SERVICE wikibase:label { bd:serviceParam wikibase:language "es,ca,eu,gl,fr,it,de,en". }
+  } ORDER BY DESC(?ele) LIMIT 400`;
+  const d = await getJSON('https://query.wikidata.org/sparql?format=json&query=' + encodeURIComponent(sparql), { signal, headers: { Accept: 'application/sparql-results+json' } }, 20000);
+  return parseWikidataPeaks(d);
+}
+export function parseWikidataPeaks(d) {
+  const out = [];
+  for (const b of d?.results?.bindings || []) {
+    const m = /Point\(([-\d.]+) ([-\d.]+)\)/.exec(b.coord?.value || '');
+    const name = b.itemLabel?.value;
+    const ele = parseFloat(b.ele?.value);
+    // sin etiqueta en ningún idioma, Wikidata devuelve el código Q…: no sirve como nombre
+    if (!m || !name || /^Q\d+$/.test(name) || !Number.isFinite(ele)) continue;
+    out.push({ name, lat: +m[2], lon: +m[1], kind: 'pico', ele });
+  }
+  return out;
+}
+
+// --- Buscar lugares en cualquier país ---
+// Photon (OpenStreetMap, sin clave) y, si falla, el buscador de Open-Meteo (GeoNames).
+export async function searchPlaces(q, { near, signal } = {}) {
+  q = q.trim();
+  if (q.length < 2) return { results: [], source: null };
+  try {
+    const bias = near ? `&lat=${near.lat.toFixed(3)}&lon=${near.lon.toFixed(3)}` : '';
+    const d = await getJSON(`https://photon.komoot.io/api/?q=${encodeURIComponent(q)}&limit=10${bias}`, { signal }, 8000);
+    return { results: parsePhoton(d), source: 'OpenStreetMap (Photon)' };
+  } catch (e) {
+    if (signal?.aborted) throw e;
+    const d = await getJSON(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(q)}&count=10&language=es`, { signal }, 8000);
+    return { results: parseOpenMeteoGeo(d), source: 'GeoNames (Open-Meteo)' };
+  }
+}
+export function parsePhoton(d) {
+  return (d?.features || []).filter(f => f.geometry?.coordinates && f.properties?.name).map(f => {
+    const p = f.properties, [lon, lat] = f.geometry.coordinates;
+    const where = [p.city || p.county, p.state, p.country].filter((x, i, a) => x && a.indexOf(x) === i && x !== p.name).join(', ');
+    return { name: p.name, lat, lon, kind: PHOTON_KIND[p.osm_value] || '', where, cc: p.countrycode || null };
+  });
+}
+const PHOTON_KIND = { peak: 'pico', volcano: 'volcán', saddle: 'collado', village: 'pueblo', town: 'población', city: 'ciudad', hamlet: 'aldea', water: 'agua', lake: 'lago', valley: 'valle', viewpoint: 'mirador', alpine_hut: 'refugio', spring: 'fuente', forest: 'bosque', wood: 'bosque', ridge: 'cresta', glacier: 'glaciar', nature_reserve: 'espacio protegido', national_park: 'parque nacional' };
+export function parseOpenMeteoGeo(d) {
+  return (d?.results || []).map(r => ({ name: r.name, lat: r.latitude, lon: r.longitude, kind: r.feature_code?.startsWith('PPL') ? 'población' : r.feature_code === 'MT' || r.feature_code === 'PK' ? 'pico' : '', where: [r.admin2, r.admin1, r.country].filter(Boolean).join(', '), cc: r.country_code || null, ele: r.elevation ?? null }));
+}
+
+// --- Geología fuera de España: Macrostrat (mapas geológicos mundiales a escala regional, CC BY 4.0) ---
+export async function macrostratAt(lat, lon) {
+  const d = await getJSON(`https://macrostrat.org/api/v2/geologic_units/map?lat=${lat.toFixed(5)}&lng=${lon.toFixed(5)}&scale=medium`, {}, 15000);
+  const u = (d?.success?.data || [])[0];
+  if (!u) return null;
+  const fields = [['Unidad', u.name], ['Litología', u.lith], ['Edad', [u.b_int_name, u.t_int_name].filter((x, i, a) => x && a.indexOf(x) === i).join(' – ')], ['Descripción', u.descrip]]
+    .filter(([, v]) => v && String(v).trim()).map(([k, v]) => [k, String(v).slice(0, 300)]);
+  return { layer: 'Macrostrat', value: u.name, fields, ref: u.ref?.ref_title || null };
+}
+
+// --- Especies observadas cerca, en una sola consulta (iNaturalist, grado investigación) ---
+export async function inatTop(lat, lon, radiusKm = 10) {
+  const u = `https://api.inaturalist.org/v1/observations/species_counts?lat=${lat.toFixed(4)}&lng=${lon.toFixed(4)}&radius=${radiusKm}&quality_grade=research&locale=es&per_page=40`;
+  const d = await getJSON(u, {}, 15000);
+  const out = {};
+  for (const r of d.results || []) {
+    const g = r.taxon?.iconic_taxon_name;
+    if (!INAT_GROUPS[g]) continue;
+    (out[g] ||= []).push({ sci: r.taxon.name, common: r.taxon.preferred_common_name || '', count: r.count, photo: r.taxon.default_photo?.square_url || null, id: r.taxon.id });
+  }
+  return out;
 }
 
 // Altitud (modelo Copernicus 90 m vía Open-Meteo); hasta 100 puntos por llamada
@@ -224,7 +383,7 @@ export async function plantnet(blob, key, organ = 'auto') {
   fd.append('images', blob, 'foto.jpg');
   fd.append('organs', organ);
   const u = `https://my-api.plantnet.org/v2/identify/all?api-key=${encodeURIComponent(key)}&lang=es&nb-results=5&include-related-images=false`;
-  const r = await fetch(u, { method: 'POST', body: fd });
+  const r = await fetch(u, { method: 'POST', body: fd, signal: AbortSignal.timeout?.(45000) });
   if (!r.ok) {
     const txt = await r.text().catch(() => '');
     throw new Error(r.status === 401 ? 'Clave de Pl@ntNet no válida' : r.status === 429 ? 'Has superado el cupo diario de Pl@ntNet' : r.status === 404 ? 'Pl@ntNet no reconoce ninguna planta en la foto' : `Pl@ntNet respondió ${r.status} ${txt.slice(0, 80)}`);

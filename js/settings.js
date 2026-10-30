@@ -4,10 +4,11 @@ import { openView, redrawView, html, raw, esc, $, $$, toast, openSheet, closeShe
 import { db } from './db.js';
 import { prepareZone, deleteZone, getZones, planTiles, estimateMB, parseGPX, bboxOfPoints } from './zones.js';
 import { bboxAround, bboxKm, fmtNum } from './geo.js';
-import { BASES, OVERLAYS, likelyFrance } from './layers.js';
+import { BASES, OVERLAYS, likelyFrance, inSpain } from './layers.js';
+import { installedVersion, manualCheck } from './updates.js';
 import { online } from './sources.js';
 
-export const APP_VERSION = '1.0';
+export const APP_VERSION = '2'; // formato de la copia de seguridad (la versión de la app la dice sw.js)
 
 export function openMore() {
   openView('Más', body => {
@@ -16,11 +17,12 @@ export function openMore() {
         <button class="tile" data-o="zones"><span class="em">🎒</span><b>Preparar salida</b><span>Mapas y datos sin cobertura</span></button>
         <button class="tile" data-o="settings"><span class="em">⚙️</span><b>Ajustes</b><span>Pl@ntNet, mapa</span></button>
         <button class="tile" data-o="backup"><span class="em">💾</span><b>Copia de seguridad</b><span>Exportar e importar</span></button>
-        <button class="tile" data-o="install"><span class="em">📲</span><b>Instalar en el iPhone</b><span>Y cómo actualizar</span></button>
+        <button class="tile" data-o="install"><span class="em">📲</span><b>Instalar y actualizar</b><span>Versión y novedades</span></button>
         <button class="tile" data-o="credits"><span class="em">📚</span><b>Fuentes y créditos</b><span>De dónde salen los datos</span></button>
         <button class="tile" data-o="storage"><span class="em">📦</span><b>Almacenamiento</b><span>Cuánto ocupa</span></button>
       </div>
-      <p class="tiny muted" style="margin-top:16px">Otero ${APP_VERSION} · Tus datos (diario, paneles, mediciones) se guardan solo en este móvil.</p>`;
+      <p class="tiny muted" style="margin-top:16px"><span id="ver">Otero</span> · Tus datos (diario, paneles, mediciones, favoritos) se guardan solo en este móvil.</p>`;
+    installedVersion().then(v => { const e = $('#ver', body); if (e && v) e.textContent = `Otero ${v}`; });
     $$('[data-o]', body).forEach(b => b.onclick = () => ({ zones: openZones, settings: openSettings, backup: openBackup, install: openInstall, credits: openCredits, storage: openStorage })[b.dataset.o]());
   }, { root: true });
 }
@@ -43,7 +45,7 @@ export function openZones() {
     $$('[data-n]', body).forEach(b => b.onclick = () => newZone(b.dataset.n));
     $$('[data-go]', body).forEach(b => b.onclick = () => { const z = zs.find(x => x.id === b.dataset.go); document.dispatchEvent(new CustomEvent('show-bbox', { detail: z.bbox })); });
     $$('[data-del]', body).forEach(b => b.onclick = async () => { const z = zs.find(x => x.id === b.dataset.del); if (await confirmBox(`¿Borrar la zona «${z.name}» y sus mapas?`, 'Borrar')) { await deleteZone(z); await getZones(true); redrawView(); document.dispatchEvent(new CustomEvent('data-changed')); } });
-    $$('[data-up]', body).forEach(b => b.onclick = async () => { const z = zs.find(x => x.id === b.dataset.up); await deleteZoneDataOnly(z); startDownload({ name: z.name, bbox: z.bbox, track: z.track, layers: z.layers || ['sat', 'topo', 'geo'], extraDetail: false }); });
+    $$('[data-up]', body).forEach(b => b.onclick = async () => { const z = zs.find(x => x.id === b.dataset.up); if (!online()) return toast('Necesitas conexión para actualizar la zona'); startDownload({ name: z.name, bbox: z.bbox, track: z.track, layers: z.layers || ['sat', 'topo', 'geo'], extraDetail: false, replaces: z }); });
   });
 }
 
@@ -70,8 +72,10 @@ async function newZone(kind) {
 
 function zoneDialog(z) {
   let radius = 6;
-  const fr = z.bbox ? likelyFrance((z.bbox.s + z.bbox.n) / 2, (z.bbox.w + z.bbox.e) / 2) : z.center ? likelyFrance(z.center.lat, z.center.lon) : false;
-  const layers = new Set(fr ? ['satfr', 'topofr', 'sat'] : ['sat', 'topo', 'geo']);
+  const c = z.bbox ? { lat: (z.bbox.s + z.bbox.n) / 2, lon: (z.bbox.w + z.bbox.e) / 2 } : z.center;
+  const fr = c ? likelyFrance(c.lat, c.lon) : false, es = c ? inSpain(c.lat, c.lon) : true;
+  // Solo capas que cubren la zona: fuera de España y Francia, el topográfico mundial
+  const layers = new Set(fr ? ['satfr', 'topofr'] : es ? ['sat', 'topo', 'geo'] : ['otm']);
   let extra = false;
   const b = openSheet('', { tall: true });
   const draw = () => {
@@ -115,6 +119,7 @@ async function startDownload(opts) {
       $('#zp', b).textContent = total ? `${phase}: ${done.toLocaleString('es-ES')} de ${total.toLocaleString('es-ES')}` : phase + '…';
       if (total) $('#zb', b).style.width = `${Math.round(done / total * 100)}%`;
     }, ctl.signal);
+    if (opts.replaces) await deleteZoneDataOnly(opts.replaces); // la nueva ya está guardada: ahora sí se quita la antigua
     await getZones(true);
     document.dispatchEvent(new CustomEvent('data-changed'));
     b.innerHTML = html`<p class="kicker">Zona lista</p><h2 class="title">${z.name}</h2>
@@ -154,10 +159,12 @@ function openSettings() {
 const b64 = blob => new Promise(r => { const f = new FileReader(); f.onload = () => r(f.result); f.readAsDataURL(blob); });
 const unb64 = async s => (await fetch(s)).blob();
 
-async function exportData(withPhotos) {
-  const out = { app: 'otero', v: APP_VERSION, t: Date.now(), stores: {} };
-  for (const s of ['panels', 'diary', 'measures']) {
-    const items = await db.all(s);
+// Prepara el archivo de copia (puede tardar con muchas fotos)
+export async function buildBackup(withPhotos) {
+  const out = { app: 'otero', v: APP_VERSION, schema: db.VERSION, t: Date.now(), stores: {} };
+  for (const s of ['panels', 'diary', 'measures', 'zones', 'kv']) {
+    let items = await db.all(s).catch(() => []);
+    if (s === 'kv') items = items.filter(it => it.id !== 'plantnetKey'); // la clave no sale del móvil
     out.stores[s] = [];
     for (const it of items) {
       const o = { ...it };
@@ -169,11 +176,24 @@ async function exportData(withPhotos) {
   }
   const blob = new Blob([JSON.stringify(out)], { type: 'application/json' });
   const name = `otero-copia-${new Date().toISOString().slice(0, 10)}${withPhotos ? '-con-fotos' : ''}.json`;
-  const file = new File([blob], name, { type: 'application/json' });
-  if (navigator.canShare?.({ files: [file] })) {
-    try { await navigator.share({ files: [file], title: 'Copia de Otero' }); return; } catch (e) { if (e.name === 'AbortError') return; }
-  }
-  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; document.body.append(a); a.click(); a.remove();
+  return { blob, name };
+}
+
+async function exportData(withPhotos) {
+  const b = openSheet(html`<p class="kicker">Copia de seguridad</p><h2 class="title">Preparando…</h2><p class="small muted">${withPhotos ? 'Con fotos puede tardar un poco.' : ''}</p>`);
+  let file;
+  try { const { blob, name } = await buildBackup(withPhotos); file = new File([blob], name, { type: 'application/json' }); }
+  catch (e) { b.innerHTML = html`<h2 class="title">No se pudo preparar</h2><p>${e.message}</p>`; return; }
+  // El iPhone solo deja compartir justo después de un toque: por eso un segundo botón
+  b.innerHTML = html`<p class="kicker">Copia de seguridad</p><h2 class="title">Copia lista</h2><p class="small">${file.name} · ${fmtNum(file.size / 1048576, 1)} MB</p>
+    <button class="btn block" id="sh">Guardar o compartir…</button><p class="tiny muted">Elige «Guardar en Archivos» (iCloud Drive) para tenerla a salvo.</p>`;
+  $('#sh', b).onclick = async () => {
+    if (navigator.canShare?.({ files: [file] })) {
+      try { await navigator.share({ files: [file], title: 'Copia de Otero' }); await db.setKV('lastBackup', Date.now()); closeSheet(); return; } catch (e) { if (e.name === 'AbortError') return; }
+    }
+    const a = document.createElement('a'); a.href = URL.createObjectURL(file); a.download = file.name; document.body.append(a); a.click(); a.remove();
+    await db.setKV('lastBackup', Date.now());
+  };
 }
 
 async function importData() {
@@ -184,14 +204,21 @@ async function importData() {
     if (d.app !== 'otero') throw new Error('No es una copia de Otero');
     let n = 0;
     for (const [s, items] of Object.entries(d.stores || {})) {
+      if (!db.STORES.includes(s) || !Array.isArray(items)) continue; // ignora lo desconocido
       for (const it of items) {
-        for (const k of ['blob', 'thumb', 'edited', 'photo']) if (typeof it[k] === 'string' && it[k].startsWith('data:')) it[k] = await unb64(it[k]);
+        if (!it || typeof it.id !== 'string') continue;
+        for (const k of ['blob', 'thumb', 'edited', 'photo']) {
+          if (typeof it[k] === 'string' && it[k].startsWith('data:')) it[k] = await unb64(it[k]);
+          else if (it[k] != null && !(it[k] instanceof Blob)) delete it[k]; // una foto rota no debe romper el diario
+        }
+        if (s === 'kv' && it.id === 'favorites') { await mergeFavorites(it.v); continue; }
         if (s === 'panels' && !it.blob && it.thumb) it.blob = it.thumb;
         const existing = await db.get(s, it.id);
         if (!existing) { await db.put(s, it); n++; }
       }
     }
     toast(`${n} elemento(s) recuperado(s)`);
+    await getZones(true);
     document.dispatchEvent(new CustomEvent('data-changed'));
   } catch (e) { toast('No se pudo importar: ' + e.message); }
 }
@@ -202,7 +229,8 @@ function openBackup() {
       <button class="btn block" id="e1">💾 Exportar datos (sin fotos, ligero)</button>
       <button class="btn block" id="e2">🖼️ Exportar todo con fotos (puede ocupar mucho)</button>
       <button class="btn sec block" id="i1">📂 Importar una copia</button>
-      <p class="tiny muted">La importación añade lo que falte; no borra nada de lo que ya tienes. Los mapas descargados no entran en la copia: se vuelven a bajar desde «Preparar salida».</p>`;
+      <p class="tiny muted">Incluye diario, paneles, mediciones, zonas preparadas (sus datos, no los mapas) y favoritos. No incluye tu clave de Pl@ntNet. La importación añade lo que falte; no borra nada de lo que ya tienes. Los mapas descargados se vuelven a bajar desde «Preparar salida».</p><p class="tiny muted" id="lastb"></p>`;
+    db.getKV('lastBackup').then(t => { const e = $('#lastb', body); if (e) e.textContent = t ? `Última copia: ${fmtDate(t)}` : 'Todavía no has hecho ninguna copia desde esta versión.'; });
     $('#e1', body).onclick = () => exportData(false);
     $('#e2', body).onclick = () => exportData(true);
     $('#i1', body).onclick = importData;
@@ -210,14 +238,16 @@ function openBackup() {
 }
 
 function openInstall() {
-  openView('Instalar en el iPhone', body => {
+  openView('Instalar y actualizar', body => {
     const standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone;
     body.innerHTML = html`<div class="article" style="font-size:16px">
       ${raw(standalone ? '<div class="note blue">✅ Ya la estás usando instalada.</div>' : '')}
       <h3>Instalar</h3><ol style="line-height:1.6;padding-left:20px"><li>Abre esta página en <b>Safari</b>.</li><li>Pulsa el botón <b>Compartir</b> (cuadrado con flecha).</li><li>Elige <b>«Añadir a pantalla de inicio»</b> y confirma.</li><li>Abre Otero desde el icono: funcionará a pantalla completa y sin cobertura.</li></ol>
       <h3>Permisos</h3><p>La primera vez te pedirá la <b>ubicación</b> (para «¿Dónde estoy?») y, al usar la brújula, el permiso de <b>movimiento y orientación</b>.</p>
-      <h3>Actualizaciones</h3><p>Cuando haya versión nueva, se descarga sola la próxima vez que abras la app con cobertura y se aplica al volver a abrirla.</p>
+      <h3>Actualizaciones</h3><p>Versión instalada: <b id="iv">…</b></p><p>Cuando se publica una versión nueva, Otero la descarga sola al abrirla (o al volver a ella) con cobertura y te muestra el aviso <b>«Hay una versión nueva · Actualizar»</b>. Tus datos se conservan: no hace falta borrar ni reinstalar nada.</p><button class="btn sec" id="chk">Buscar actualizaciones</button> <span class="small" id="chkr"></span>
       <h3>Importante</h3><p>Usa siempre la app desde el icono, no desde Safari: el iPhone guarda los datos de la app instalada aparte y no los borra aunque pases semanas sin abrirla.</p></div>`;
+    installedVersion().then(v => { const e = $('#iv', body); if (e) e.textContent = v || 'desconocida (versión antigua o sin service worker)'; });
+    $('#chk', body).onclick = async () => { $('#chkr', body).textContent = 'Comprobando…'; $('#chkr', body).textContent = await manualCheck(); };
   });
 }
 
@@ -232,6 +262,10 @@ function openCredits() {
       <li style="display:block"><b>Especies observadas</b>: iNaturalist (observaciones de grado investigación).</li>
       <li style="display:block"><b>Identificación de plantas</b>: «The image-based plant species identification service used, is based on the Pl@ntNet recognition API, regularly updated and accessible through the site https://my.plantnet.org/».</li>
       <li style="display:block"><b>Mapa topográfico mundial</b>: © OpenTopoMap (CC-BY-SA).</li>
+      <li style="display:block"><b>Geología fuera de España</b>: Macrostrat (CC BY 4.0), mapas a escala regional: orientativos.</li>
+      <li style="display:block"><b>Picos cuando OpenStreetMap no responde</b>: Wikidata (CC0).</li>
+      <li style="display:block"><b>Búsqueda de lugares</b>: Photon de Komoot (datos de OpenStreetMap) y, de respaldo, el buscador de Open-Meteo (GeoNames, CC BY 4.0).</li>
+      <li style="display:block"><b>Servidores de OpenStreetMap usados</b>: overpass-api.de, overpass.kumi.systems y overpass.private.coffee (reciben las coordenadas que consultas).</li>
       <li style="display:block"><b>Textos de la biblioteca</b>: redactados para Otero. Son divulgativos: para identificaciones delicadas, contrasta con una guía de campo.</li>
       <li style="display:block"><b>Librerías</b>: Leaflet (BSD-2), exifr (MIT).</li></ul>`;
   });
@@ -248,4 +282,11 @@ function openStorage() {
       <button class="btn sec block" id="clr">Vaciar mapas vistos recientemente</button><p class="tiny muted">Las zonas preparadas no se tocan.</p>`;
     $('#clr', body).onclick = async () => { await caches.delete('otero-tiles-recent'); toast('Hecho'); redrawView(); };
   });
+}
+
+async function mergeFavorites(incoming) {
+  if (!Array.isArray(incoming)) return;
+  const mine = (await db.getKV('favorites', [])) || [];
+  for (const f of incoming) if (f && Number.isFinite(f.lat) && !mine.some(m => Math.abs(m.lat - f.lat) < 1e-4 && Math.abs(m.lon - f.lon) < 1e-4)) mine.push(f);
+  await db.setKV('favorites', mine);
 }

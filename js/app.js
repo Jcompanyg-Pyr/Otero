@@ -1,7 +1,7 @@
 // Otero — arranque, mapa y navegación.
 import { state } from './state.js';
 import { $, $$, html, raw, esc, toast, closeSheet, openSheet, closeViews, onSheetClose, el, fmtDate } from './ui.js';
-import { BASES, OVERLAYS, makeLayer, likelyFrance } from './layers.js';
+import { BASES, OVERLAYS, makeLayer, baseFor, covers } from './layers.js';
 import { db } from './db.js';
 import { getZones } from './zones.js';
 import { showPoint } from './point.js';
@@ -12,31 +12,39 @@ import { openPanels, openPanel, panelsForMap } from './panels.js';
 import { openCompass } from './compass.js';
 import { openMore, openZones } from './settings.js';
 import { fmtNum, inBBox } from './geo.js';
+import { locate, quality, fmtAcc, isFresh } from './location.js';
+import { openSearch, toggleFavorite } from './places.js';
+import { initUpdates } from './updates.js';
 
 const L = window.L;
 
+// localStorage puede fallar (modo privado, datos corruptos): la app debe arrancar igualmente
+const loadPref = (k, def) => { try { const v = JSON.parse(localStorage.getItem(k)); return v ?? def; } catch (e) { return def; } };
+const savePref = (k, v) => { try { localStorage.setItem(k, typeof v === 'string' ? v : JSON.stringify(v)); } catch (e) { } };
+
 // ---------- Mapa ----------
-const saved = JSON.parse(localStorage.getItem('otero:view') || 'null');
+// Sin vista guardada se abre en una vista general de la península; nunca se usa como «tu posición».
+const saved = loadPref('otero:view', null);
 const map = L.map('map', { zoomControl: false, attributionControl: true, worldCopyJump: false, tap: true })
-  .setView(saved ? [saved.lat, saved.lon] : [40.33, -0.68], saved ? saved.z : 11);
+  .setView(saved ? [saved.lat, saved.lon] : [40.2, -3.5], saved ? saved.z : 6);
 state.map = map;
 L.control.scale({ imperial: false, position: 'bottomleft' }).addTo(map);
 map.attributionControl.setPrefix('');
 
-let baseKey = localStorage.getItem('otero:base') || (likelyFrance(map.getCenter().lat, map.getCenter().lng) ? 'satfr' : 'sat');
+let baseKey = (() => { try { return localStorage.getItem('otero:base'); } catch (e) { return null; } })() || baseFor(map.getCenter().lat, map.getCenter().lng);
 let baseLayer = null, geoLayer = null;
-const show = JSON.parse(localStorage.getItem('otero:show') || '{"panels":true,"diary":true,"measures":true,"zones":true,"names":true}');
-let geoOn = localStorage.getItem('otero:geo') === '1';
+const show = loadPref('otero:show', { panels: true, diary: true, measures: true, zones: true, names: true });
+let geoOn = loadPref('otero:geo', 0) === 1;
 
 function setBase(k) {
   if (!BASES[k]) k = 'sat';
-  baseKey = k; localStorage.setItem('otero:base', k);
+  baseKey = k; savePref('otero:base', k);
   if (baseLayer) map.removeLayer(baseLayer);
   baseLayer = makeLayer(L, BASES[k]).addTo(map);
   baseLayer.bringToBack();
 }
 function setGeo(on) {
-  geoOn = on; localStorage.setItem('otero:geo', on ? '1' : '0');
+  geoOn = on; savePref('otero:geo', on ? '1' : '0');
   if (geoLayer) { map.removeLayer(geoLayer); geoLayer = null; }
   if (on) geoLayer = makeLayer(L, OVERLAYS.geo, { zIndex: 5 }).addTo(map);
 }
@@ -44,7 +52,7 @@ setBase(baseKey); setGeo(geoOn);
 
 map.on('moveend', () => {
   const c = map.getCenter();
-  localStorage.setItem('otero:view', JSON.stringify({ lat: c.lat, lon: c.lng, z: map.getZoom() }));
+  savePref('otero:view', { lat: c.lat, lon: c.lng, z: map.getZoom() });
   updateZoneChip(); drawNames();
 });
 
@@ -98,31 +106,77 @@ async function panelPopup(p) {
 onSheetClose(() => { groups.lines.clearLayers(); if (tempMarker) { map.removeLayer(tempMarker); tempMarker = null; } });
 
 // ---------- Ubicación ----------
+// Punto azul = tu posición real (GPS) con su círculo de precisión. Gris = antigua; hueco = aproximada.
 let meMarker = null, accCircle = null;
-function locate({ center = true } = {}) {
-  return new Promise((res, rej) => {
-    if (!navigator.geolocation) return rej(new Error('Este navegador no da la ubicación'));
-    navigator.geolocation.getCurrentPosition(pos => {
-      const { latitude: lat, longitude: lon, accuracy: acc, altitude: alt } = pos.coords;
-      state.me = { lat, lon, acc, alt, t: Date.now() };
-      if (!meMarker) { meMarker = L.marker([lat, lon], { icon: L.divIcon({ className: '', html: '<div class="me-dot"></div>', iconSize: [18, 18], iconAnchor: [9, 9] }), interactive: false, zIndexOffset: 1000 }).addTo(map); accCircle = L.circle([lat, lon], { radius: acc, weight: 1, color: '#2a7ae4', fillOpacity: .08, interactive: false }).addTo(map); }
-      else { meMarker.setLatLng([lat, lon]); accCircle.setLatLng([lat, lon]).setRadius(acc); }
-      if (center) map.setView([lat, lon], Math.max(map.getZoom(), 14));
-      res(state.me);
-    }, err => rej(new Error(err.code === 1 ? 'Sin permiso de ubicación. Actívalo en Ajustes → Privacidad → Localización → Safari (o Otero).' : 'No consigo la posición GPS. Prueba al aire libre.')), { enableHighAccuracy: true, timeout: 20000, maximumAge: 15000 });
-  });
+function drawMe() {
+  const me = state.me;
+  if (!me) return;
+  const cls = 'me-dot' + (quality(me.acc) === 'aproximada' ? ' approx' : '') + (isFresh(me) ? '' : ' stale');
+  const icon = L.divIcon({ className: '', html: `<div class="${cls}"></div>`, iconSize: [18, 18], iconAnchor: [9, 9] });
+  if (!meMarker) {
+    meMarker = L.marker([me.lat, me.lon], { icon, interactive: false, zIndexOffset: 1000 }).addTo(map);
+    accCircle = L.circle([me.lat, me.lon], { radius: me.acc, weight: 1, color: '#2a7ae4', fillOpacity: .08, interactive: false }).addTo(map);
+  } else { meMarker.setLatLng([me.lat, me.lon]).setIcon(icon); accCircle.setLatLng([me.lat, me.lon]).setRadius(me.acc); }
+}
+setInterval(drawMe, 30e3); // para que el punto se vuelva gris cuando la posición se queda antigua
+document.addEventListener('me-updated', drawMe);
+
+function centerOnMe() {
+  const me = state.me;
+  // Si la precisión es mala, enseña todo el círculo: así se ve que la posición es dudosa
+  if (me.acc > 300) map.fitBounds(accCircle.getBounds(), { maxZoom: 15, padding: [30, 30] });
+  else map.setView([me.lat, me.lon], Math.max(map.getZoom(), 14));
+  ensureBase(me.lat, me.lon);
 }
 
-$('#btn-locate').onclick = () => locate().catch(e => toast(e.message, 4000));
+async function findMe(btn) {
+  const label = btn?.lastChild?.nodeType === 3 ? btn.lastChild : null;
+  const old = label?.textContent;
+  if (btn) btn.disabled = true;
+  if (label) label.textContent = 'Buscando GPS…';
+  try {
+    let first = true;
+    const me = await locate({
+      onProgress: f => {
+        state.me = f; drawMe();
+        if (first) { first = false; centerOnMe(); }
+        if (label) label.textContent = `Afinando… ${fmtAcc(f.acc)}`;
+      },
+    });
+    drawMe(); centerOnMe();
+    return me;
+  } finally { if (btn) btn.disabled = false; if (label) label.textContent = old; }
+}
+
+$('#btn-locate').onclick = () => findMe().catch(e => toast(e.message, 6000));
 $('#btn-where').onclick = async () => {
-  const btn = $('#btn-where'); btn.disabled = true; btn.lastChild.textContent = 'Buscando GPS…';
-  try { const me = await locate(); showPoint(me.lat, me.lon, { fromGPS: true, acc: me.acc, alt: me.alt }); }
-  catch (e) { toast(e.message, 4500); }
-  finally { btn.disabled = false; btn.lastChild.textContent = '¿Dónde estoy?'; }
+  try { const me = await findMe($('#btn-where')); showPoint(me.lat, me.lon, { src: 'gps', fix: me }); }
+  catch (e) { locationErrorSheet(e); }
 };
 $('#btn-what').onclick = () => openIdentify();
 $('#btn-compass').onclick = () => openCompass();
 $('#btn-layers').onclick = () => layersSheet();
+$('#btn-search').onclick = () => openSearch();
+
+function locationErrorSheet(e) {
+  const b = openSheet(html`<p class="kicker">Ubicación</p><h2 class="title">No tengo tu posición</h2><p style="line-height:1.5">${e.message}</p>
+    <div class="row wrap"><button class="btn" data-a="retry">Reintentar</button><button class="btn sec" data-a="pick">Elegir en el mapa</button><button class="btn sec" data-a="search">Buscar un lugar</button></div>`);
+  b.onclick = ev => {
+    const a = ev.target.closest('[data-a]')?.dataset.a; if (!a) return;
+    closeSheet();
+    if (a === 'retry') $('#btn-where').click();
+    if (a === 'pick') toast('Toca el mapa en el sitio donde estás', 4000);
+    if (a === 'search') openSearch();
+  };
+}
+
+// Si el fondo elegido no cubre el sitio (p. ej. ortofoto de España en los Alpes), cambia al topo mundial
+function ensureBase(lat, lon) {
+  if (covers(baseKey, lat, lon)) return;
+  const k = baseFor(lat, lon);
+  setBase(k);
+  toast(`El fondo anterior no cubre esta zona: uso «${BASES[k].name}»`, 4000);
+}
 
 let tempMarker = null;
 let pickMode = null;
@@ -132,7 +186,17 @@ map.on('click', e => {
   if (frameMode) return;
   if (tempMarker) map.removeLayer(tempMarker);
   tempMarker = L.marker([lat, lng], { interactive: false }).addTo(map);
-  showPoint(lat, lng);
+  showPoint(lat, lng, { src: 'map' });
+});
+// Lugar elegido en el buscador o en favoritos
+document.addEventListener('go-place', e => {
+  const p = e.detail;
+  closeViews(); setTab('map', false);
+  map.setView([p.lat, p.lon], Math.max(map.getZoom(), 13));
+  ensureBase(p.lat, p.lon);
+  if (tempMarker) map.removeLayer(tempMarker);
+  tempMarker = L.marker([p.lat, p.lon], { interactive: false }).addTo(map);
+  showPoint(p.lat, p.lon, { src: 'search', name: p.name });
 });
 
 // ---------- Capas (hoja) ----------
@@ -146,7 +210,7 @@ function layersSheet() {
     <p class="tiny muted">Los fondos de España y Francia se pueden descargar para usarlos sin cobertura (Más → Preparar salida). El mapa geológico solo cubre España.</p>`);
   $$('input[name=base]', b).forEach(r => r.onchange = () => setBase(r.value));
   $('#lg', b).onchange = e => setGeo(e.target.checked);
-  $$('[data-s]', b).forEach(c => c.onchange = () => { show[c.dataset.s] = c.checked; localStorage.setItem('otero:show', JSON.stringify(show)); drawData(); });
+  $$('[data-s]', b).forEach(c => c.onchange = () => { show[c.dataset.s] = c.checked; savePref('otero:show', show); drawData(); });
 }
 
 // ---------- Pestañas ----------
@@ -177,7 +241,8 @@ document.addEventListener('point-action', e => {
   if (action === 'diary') noteForm({ lat, lon });
   if (action === 'measure') measureForm({ lat, lon });
   if (action === 'claude') claudeFlow();
-  if (action === 'peaks') openCompass();
+  if (action === 'peaks') { const { info } = e.detail; closeSheet(); openCompass({ lat, lon, ele: info?.ele ?? null, label: info?.label, src: info?.src, acc: info?.fix?.acc, t: info?.fix?.t }); }
+  if (action === 'fav') toggleFavorite({ lat, lon, name: e.detail.info?.label }).then(on => { toast(on ? '☆ Guardado en favoritos' : 'Quitado de favoritos'); e.detail.btn?.classList.toggle('on', on); });
 });
 
 // Elegir un punto en el mapa (para situar un panel)
@@ -228,15 +293,13 @@ window.addEventListener('online', updateNet); window.addEventListener('offline',
 updateNet(); updateZoneChip(); drawData();
 
 // ---------- Service worker (modo sin conexión) ----------
-if ('serviceWorker' in navigator && location.protocol !== 'file:') {
-  navigator.serviceWorker.register('sw.js').catch(e => console.warn('SW', e));
-}
+initUpdates();
 // Pedir que el iPhone no borre los datos
 navigator.storage?.persist?.().catch(() => { });
 
 // Primera vez
-if (!localStorage.getItem('otero:welcome')) {
-  localStorage.setItem('otero:welcome', '1');
+if (!loadPref('otero:welcome', 0)) {
+  savePref('otero:welcome', '1');
   openSheet(html`<p class="kicker">Bienvenido</p><h2 class="title">Otero, tu cuaderno de campo</h2>
     <ul class="list">
       <li><span class="k">📍</span><div><b>¿Dónde estoy?</b> Término, picos y masías cercanas, roca, tiempo e inversión térmica.</div></li>

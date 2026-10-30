@@ -23,7 +23,7 @@ export function analyseTerrain(t) {
   let cls, score, text;
   if (range < 70) {
     cls = 'Llano o paramera'; score = 2;
-    text = 'El terreno de alrededor es casi plano. En noches despejadas el aire se enfría mucho por radiación, pero no tiene a dónde escurrirse: se queda «estancado» encima. Las parameras altas de Teruel son de los sitios más fríos de la península por esto.';
+    text = 'El terreno de alrededor es casi plano. En noches despejadas el aire se enfría mucho por radiación, pero no tiene a dónde escurrirse: se queda «estancado» encima. Por eso las altiplanicies y parameras de montaña figuran entre los sitios más fríos de su región.';
   } else if (tpi2 < -60 || (tpi1 < -25 && higher >= 11)) {
     cls = 'Hondonada o fondo de valle'; score = 3;
     text = `Estás unos ${fmtNum(Math.abs(tpi2))} m por debajo del terreno que te rodea. Aquí es donde se encharca el aire frío que baja de las laderas por la noche: es el sitio típico de heladas fuertes, escarcha y nieblas matinales.`;
