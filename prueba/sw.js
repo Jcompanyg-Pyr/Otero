@@ -2,7 +2,7 @@
 // IMPORTANTE: cambia VERSION en cada publicación (fecha + número). Es lo que hace que el iPhone
 // detecte la versión nueva, la descargue entera y ofrezca «Actualizar». Los datos personales
 // (IndexedDB) no se tocan nunca desde aquí.
-const VERSION = '2026.10.29-1';
+const VERSION = '2026.10.30-1';
 const APP_CACHE = 'otero-prueba-' + VERSION; // versión de prueba: cachés propias, no toca las de la app principal
 const SHELL = [
   './', './index.html', './styles.css', './manifest.webmanifest',
