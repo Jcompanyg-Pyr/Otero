@@ -2,7 +2,7 @@
 // IMPORTANTE: cambia VERSION en cada publicación (fecha + número). Es lo que hace que el iPhone
 // detecte la versión nueva, la descargue entera y ofrezca «Actualizar». Los datos personales
 // (IndexedDB) no se tocan nunca desde aquí.
-const VERSION = '2026.10.31-5';
+const VERSION = '2026.10.31-6';
 const APP_CACHE = 'otero-app-' + VERSION;
 const SHELL = [
   './', './index.html', './styles.css', './manifest.webmanifest',
@@ -78,9 +78,14 @@ self.addEventListener('fetch', e => {
     // Las versiones nuevas llegan instalando un service worker nuevo, no archivo a archivo.
     e.respondWith((async () => {
       const c = await caches.open(APP_CACHE);
-      const hit = (await c.match(e.request, { ignoreSearch: true })) || (e.request.mode === 'navigate' ? await c.match('./index.html') : null);
+      const hit = await c.match(e.request, { ignoreSearch: true });
       if (hit) return hit;
-      try { return await fetch(e.request); } catch (err) { return new Response('Sin conexión', { status: 503 }); }
+      try { return await fetch(e.request); }
+      catch (err) {
+        // sin conexión: cualquier página de la app abre la app (la página principal guardada)
+        if (e.request.mode === 'navigate') { const idx = await c.match('./index.html'); if (idx) return idx; }
+        return new Response('Sin conexión', { status: 503 });
+      }
     })());
   }
 });
