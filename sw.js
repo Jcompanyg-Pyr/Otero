@@ -2,7 +2,7 @@
 // IMPORTANTE: cambia VERSION en cada publicación (fecha + número). Es lo que hace que el iPhone
 // detecte la versión nueva, la descargue entera y ofrezca «Actualizar». Los datos personales
 // (IndexedDB) no se tocan nunca desde aquí.
-const VERSION = '2026.10.30-1';
+const VERSION = '2026.10.31-1';
 const APP_CACHE = 'otero-app-' + VERSION;
 const SHELL = [
   './', './index.html', './styles.css', './manifest.webmanifest',

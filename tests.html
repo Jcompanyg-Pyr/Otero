@@ -18,7 +18,8 @@
 <script type="module">
 import { distance, bearing } from './js/geo.js';
 import { locate, quality, fmtAcc, LocationError } from './js/location.js';
-import { getJSON, overpass, peaksAround, parseWikidataPeaks, parsePhoton, parseOpenMeteoGeo, SourceError, explainError, _setOsmBudget } from './js/sources.js';
+import { getJSON, overpass, peaksAround, parseWikidataPeaks, parsePhoton, parseOpenMeteoGeo, SourceError, explainError, _setOsmBudget, parsePhotonAdmin, parseNominatimAdmin, parsePhotonPlaces } from './js/sources.js';
+import { analyseTerrain } from './js/climate.js';
 import { inSpain, inFrance, baseFor, covers } from './js/layers.js';
 
 const out = document.getElementById('out');
@@ -158,6 +159,44 @@ await test('Buscador: interpreta Photon y Open-Meteo', () => {
   const o = parseOpenMeteoGeo({ results: [{ name: 'Jaca', latitude: 42.57, longitude: -0.55, feature_code: 'PPL', admin1: 'Aragón', country: 'España', country_code: 'ES' }] });
   assert(o[0].kind === 'población' && o[0].cc === 'ES');
   assert(parsePhoton({}).length === 0 && parseOpenMeteoGeo(null).length === 0);
+});
+
+// ---- Dónde y Alrededor (casos reales: Bonansa, 31-10-2026) ----
+await test('Dónde: Photon con el término de Bonansa no debe decir «Benabarre»', () => {
+  const r = parsePhotonAdmin({ features: [{ properties: { osm_key: 'place', osm_value: 'village', name: 'Bonansa', city: 'Benabarre / Benavarri', county: 'Huesca', state: 'Aragón', country: 'España', extra: { admin_level: '8' } } }] });
+  assert(r.municipio === 'Bonansa', r.municipio);
+});
+await test('Dónde: Nominatim da el término municipal', () => {
+  const r = parseNominatimAdmin({ category: 'boundary', addresstype: 'village', name: 'Bonansa', address: { village: 'Bonansa', province: 'Huesca', state: 'Aragón', country: 'España', country_code: 'es' } });
+  assert(r.municipio === 'Bonansa' && r.provincia === 'Huesca' && r.cc === 'ES', JSON.stringify(r));
+  assert(Object.keys(parseNominatimAdmin({ error: 'Unable to geocode' })).length === 0);
+});
+await test('Alrededor: nombres de Photon (fuente, collado, arroyo) sin duplicados', () => {
+  const f = (k, v, n, id) => ({ geometry: { coordinates: [0.66, 42.42] }, properties: { osm_key: k, osm_value: v, name: n, osm_type: 'N', osm_id: id } });
+  const r = parsePhotonPlaces([f('natural', 'spring', 'Font Nova', 1), f('mountain_pass', 'yes', 'Puerto de Bonansa', 2), f('waterway', 'stream', 'Riuet de la Mola', 3), f('waterway', 'stream', 'Riuet de la Mola', 4), f('natural', 'spring', 'Font Nova', 1)]);
+  assert(r.places.length === 2 && r.places[0].kind === 'fuente' && r.places[1].kind === 'collado', JSON.stringify(r.places));
+  assert(r.waters.length === 1 && r.waters[0].kind === 'barranco');
+});
+
+// ---- Relieve (anillos sintéticos: 150, 400, 1000, 2500 m) ----
+const radii = [150, 400, 1000, 2500];
+const terr = fn => ({ ele: fn(0, 0), radii, rings: radii.map(r => [0, 1, 2, 3, 4, 5, 6, 7].map(i => { const a = i * Math.PI / 4; return fn(r * Math.sin(a), r * Math.cos(a)); })) });
+await test('Relieve: ladera que baja hacia el sur → ladera, mira al sur (solana)', () => {
+  const a = analyseTerrain(terr((x, y) => 1200 + 0.25 * y)); // sube hacia el norte, ~14°
+  assert(/^Ladera/.test(a.cls) && Math.abs(a.aspect - 180) < 5 && a.exposure === 'solana' && Math.abs(a.slope - 14) < 1, `${a.cls} ${a.aspect} ${a.slope}`);
+});
+await test('Relieve: umbría (baja hacia el norte)', () => {
+  const a = analyseTerrain(terr((x, y) => 1200 - 0.2 * y));
+  assert(a.exposure === 'umbria' && Math.min(a.aspect, 360 - a.aspect) < 5, `${a.aspect}`);
+});
+await test('Relieve: hondonada, cumbre y llano', () => {
+  assert(/^Fondo/.test(analyseTerrain(terr((x, y) => 1000 + Math.hypot(x, y) * 0.15)).cls), 'hondonada');
+  assert(/cumbre/.test(analyseTerrain(terr((x, y) => 2000 - Math.hypot(x, y) * 0.3)).cls), 'cumbre');
+  assert(analyseTerrain(terr(() => 700)).cls === 'Llano o paramera', 'llano');
+});
+await test('Relieve: fondo de valle estrecho no se confunde con ladera', () => {
+  const a = analyseTerrain(terr((x, y) => 1300 + Math.abs(x) * 0.6 + y * 0.02)); // cañón norte-sur
+  assert(/^Fondo/.test(a.cls), a.cls);
 });
 
 // ---- Cobertura de capas ----

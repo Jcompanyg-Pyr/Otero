@@ -151,8 +151,10 @@ export async function zoneData(b, onStep = () => { }) {
 }
 
 // Términos municipales en un punto (en línea)
-// Si OpenStreetMap (Overpass) no responde, Photon da al menos municipio, provincia/región y país.
+// Municipio, comarca, provincia… Primero Nominatim (usa los límites municipales de OpenStreetMap y
+// responde rápido); si falla, Overpass; si también falla, Photon (menos fiable: lo marca como aproximado).
 export async function adminAt(lat, lon) {
+  try { const r = await adminNominatim(lat, lon); if (r.municipio || r.pais) return r; } catch (e) { }
   try { return await adminOverpass(lat, lon); }
   catch (e) {
     const r = await adminPhoton(lat, lon).catch(() => null);
@@ -160,11 +162,33 @@ export async function adminAt(lat, lon) {
     throw e;
   }
 }
+export async function adminNominatim(lat, lon) {
+  // zoom=10: el resultado es el término municipal que contiene el punto
+  const d = await getJSON(`https://nominatim.openstreetmap.org/reverse?lat=${lat.toFixed(5)}&lon=${lon.toFixed(5)}&zoom=10&format=jsonv2&accept-language=es`, {}, 8000);
+  return parseNominatimAdmin(d);
+}
+export function parseNominatimAdmin(d) {
+  if (!d || d.error) return {};
+  const a = d.address || {};
+  const isMuni = d.category === 'boundary' || ['village', 'town', 'city', 'municipality', 'hamlet'].includes(d.addresstype);
+  return {
+    municipio: (isMuni ? d.name : null) || a.municipality || a.city || a.town || a.village || null,
+    comarca: a.county && a.county !== a.province ? a.county : null,
+    provincia: a.province || a.county || null, region: a.state || null, pais: a.country || null,
+    cc: a.country_code ? a.country_code.toUpperCase() : null,
+  };
+}
 export async function adminPhoton(lat, lon) {
   const d = await getJSON(`https://photon.komoot.io/reverse?lat=${lat.toFixed(5)}&lon=${lon.toFixed(5)}&limit=1`, {}, 8000);
+  return parsePhotonAdmin(d);
+}
+export function parsePhotonAdmin(d) {
   const p = d?.features?.[0]?.properties;
   if (!p) return {};
-  return { municipio: p.city || p.town || p.village || p.municipality || null, provincia: p.county || null, region: p.state || null, pais: p.country || null, aprox: true };
+  // Si el resultado ES el término municipal (admin_level 8), su nombre es el municipio;
+  // el campo «city» de Photon a veces trae otro pueblo de la comarca (p. ej. Benabarre en vez de Bonansa).
+  const muni = p.extra?.admin_level === '8' || p.osm_key === 'boundary' ? p.name : (p.osm_value === 'village' || p.osm_value === 'town' || p.osm_value === 'city') ? p.name : (p.city || p.town || p.village || null);
+  return { municipio: muni, provincia: p.county || null, region: p.state || null, pais: p.country || null, aprox: true };
 }
 async function adminOverpass(lat, lon) {
   const q = `[out:json][timeout:15];is_in(${lat},${lon})->.a;rel(pivot.a)["boundary"="administrative"]["admin_level"~"^(2|4|6|7|8)$"];out tags;`;
@@ -181,10 +205,48 @@ async function adminOverpass(lat, lon) {
   return out;
 }
 
-export async function placesAround(lat, lon, radius = 5000) {
+// Nombres cercanos. OpenStreetMap completo (Overpass) si contesta en unos segundos;
+// si no, los mismos datos de OpenStreetMap a través de Photon, que es mucho más rápido.
+export async function placesAround(lat, lon, radius = 5000, { wait = 4000 } = {}) {
   const area = `around:${radius},${lat},${lon}`;
   const q = `[out:json][timeout:20];(${PLACE_FILTER(area)});out center tags;way["waterway"~"^(river|stream)$"]["name"](around:2000,${lat},${lon});out geom;`;
-  return parsePlaces((await overpass(q, 20000, { stagger: 4000 })).elements);
+  const ctl = new AbortController();
+  const osm = overpass(q, 20000, { stagger: 4000, signal: ctl.signal }).then(d => ({ ...parsePlaces(d.elements), source: 'OpenStreetMap' }));
+  osm.catch(() => { });
+  const quick = await Promise.race([osm.catch(() => null), new Promise(r => setTimeout(() => r('tarde'), wait))]);
+  if (quick && quick !== 'tarde') return quick;
+  try {
+    const p = await photonAround(lat, lon, radius / 1000);
+    if (p.places.length || p.waters.length) { ctl.abort(); return p; }
+  } catch (e) { }
+  return await osm; // último intento: esperar a Overpass (o su error)
+}
+const PHOTON_TAGS = ['natural:peak', 'natural:saddle', 'natural:spring', 'natural:cave_entrance', 'natural:valley', 'natural:ridge', 'natural:cliff', 'natural:water', 'natural:tree', 'place:village', 'place:hamlet', 'place:isolated_dwelling', 'place:farm', 'place:locality', 'tourism:viewpoint', 'tourism:alpine_hut', 'tourism:wilderness_hut', 'amenity:shelter', 'mountain_pass', 'waterway:river', 'waterway:stream'];
+export async function photonAround(lat, lon, km = 6) {
+  const base = `https://photon.komoot.io/reverse?lat=${lat.toFixed(5)}&lon=${lon.toFixed(5)}&radius=${km}&limit=50`;
+  // dos consultas: todo lo cercano y, aparte, picos (si no, los picos quedan fuera de los 50 más próximos)
+  const [all, peaks] = await Promise.all([
+    getJSON(base + '&' + PHOTON_TAGS.map(t => 'osm_tag=' + t).join('&'), {}, 8000),
+    getJSON(base + '&osm_tag=natural:peak&limit=20', {}, 8000).catch(() => null),
+  ]);
+  return { ...parsePhotonPlaces([...(all?.features || []), ...(peaks?.features || [])]), source: 'OpenStreetMap (vía Photon)' };
+}
+export function parsePhotonPlaces(features) {
+  const places = [], waters = [], seen = new Set();
+  for (const f of features) {
+    const p = f.properties || {}, c = f.geometry?.coordinates;
+    if (!p.name || !c) continue;
+    const key = p.osm_type + p.osm_id;
+    if (seen.has(key)) continue; seen.add(key);
+    const [lon, lat] = c;
+    if (p.osm_key === 'waterway') {
+      if (waters.some(w => w.name === p.name)) continue;
+      waters.push({ name: p.name, kind: p.osm_value === 'river' ? 'río' : 'barranco', pts: [[lat, lon]] });
+      continue;
+    }
+    places.push({ name: p.name, lat, lon, kind: kindOf({ [p.osm_key]: p.osm_value }), ele: null });
+  }
+  return { places, waters };
 }
 
 // Picos con nombre y altitud alrededor de un punto.
@@ -319,24 +381,26 @@ export function gridValue(g, lat, lon) {
   return (v(x0, y0) * (1 - tx) + v(x1, y0) * tx) * (1 - ty) + (v(x0, y1) * (1 - tx) + v(x1, y1) * tx) * ty;
 }
 
-// Puntos en anillos a 1 y 2,5 km para saber si estás en hondonada o en loma
+// Anillos de 8 puntos (N, NE, E…) a varias distancias: los cercanos dan la pendiente y su orientación;
+// los lejanos, si estás en el fondo, a media ladera o en lo alto.
+export const RING_RADII = [150, 400, 1000, 2500];
 export function ringPoints(lat, lon) {
   const pts = [[lat, lon]];
-  for (const d of [1000, 2500]) for (let a = 0; a < 360; a += 45) pts.push(destination(lat, lon, a, d));
+  for (const d of RING_RADII) for (let a = 0; a < 360; a += 45) pts.push(destination(lat, lon, a, d));
   return pts;
 }
+const toRings = vals => RING_RADII.map((_, i) => vals.slice(1 + i * 8, 9 + i * 8));
 
 export async function terrainOnline(lat, lon) {
   const el = await elevations(ringPoints(lat, lon));
-  return { ele: el[0], ring: el.slice(1) };
+  return { ele: el[0], rings: toRings(el), radii: RING_RADII, src: 'online' };
 }
 
+// Desde la malla de una zona preparada (más gruesa: la pendiente es menos fina)
 export function terrainFromGrid(g, lat, lon) {
   const pts = ringPoints(lat, lon).map(p => gridValue(g, p[0], p[1]));
-  if (pts[0] == null) return null;
-  const ring = pts.slice(1).filter(v => v != null);
-  if (ring.length < 8) return null;
-  return { ele: pts[0], ring };
+  if (pts[0] == null || pts.some(v => v == null)) return null;
+  return { ele: pts[0], rings: toRings(pts), radii: RING_RADII, src: 'grid' };
 }
 
 // Tiempo (Open-Meteo, modelos de AEMET/Météo-France/ECMWF combinados)
@@ -350,10 +414,11 @@ export async function forecast(lat, lon, ele) {
   return d;
 }
 
-// Geología bajo un punto (IGME, MAGNA 1:50.000; solo España)
+// Geología bajo un punto (IGME, MAGNA 1:50.000; solo España). Capa 11 = litologías.
+// (La capa 0 es el índice de hojas: devolvía el nombre de la hoja, p. ej. «El Pont de Suert», no la roca.)
 export async function geologyAt(lat, lon) {
   const ext = `${lon - 0.01},${lat - 0.01},${lon + 0.01},${lat + 0.01}`;
-  const u = `${IGME_REST}/identify?geometry=${lon},${lat}&geometryType=esriGeometryPoint&sr=4326&layers=all:0&tolerance=1&mapExtent=${ext}&imageDisplay=400,400,96&returnGeometry=false&f=json`;
+  const u = `${IGME_REST}/identify?geometry=${lon},${lat}&geometryType=esriGeometryPoint&sr=4326&layers=all:11&tolerance=1&mapExtent=${ext}&imageDisplay=400,400,96&returnGeometry=false&f=json`;
   const d = await getJSON(u, {}, 20000);
   const res = (d.results || [])[0];
   if (!res) return null;

@@ -122,6 +122,7 @@ export async function showPoint(lat, lon, opts = {}) {
     else sect('#pt-terrain', 'Relieve y frío nocturno', html`
       <div class="row wrap"><span class="pill">${an.cls}</span>${raw(v ? `<span class="pill ${v.cls}">${esc(v.text)}</span>` : '')}</div>
       <p style="margin:8px 0 6px;line-height:1.5">${an.text}</p>
+      <p class="tiny muted" style="margin:0 0 6px">${an.how}</p>
       ${raw(night ? html`<p class="small" style="margin:0 0 6px"><b>Esta noche:</b> ${night.txt} Nubosidad media ${Math.round(night.cloud)} %, viento máx. ${Math.round(night.wind)} km/h, mínima prevista ~${Math.round(night.tmin)} °C${an.score >= 2 && night.calm >= 1 ? ', aunque aquí probablemente baje más' : ''}.</p>` : '')}
       <button class="btn small sec" data-art="inversion">¿Cómo funciona la inversión?</button>`);
     if (fc) sect('#pt-weather', 'Tiempo', weatherHTML(fc) + (zone?.forecast === fc ? '<p class="tiny muted">Previsión guardada al preparar la zona.</p>' : ''));
