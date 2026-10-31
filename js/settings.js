@@ -2,7 +2,7 @@
 import { state } from './state.js';
 import { openView, redrawView, html, raw, esc, $, $$, toast, openSheet, closeSheet, confirmBox, fmtDate, pickFiles, closeViews } from './ui.js';
 import { db } from './db.js';
-import { prepareZone, deleteZone, getZones, planTiles, estimateMB, parseGPX, bboxOfPoints } from './zones.js';
+import { prepareZone, deleteZone, getZones, planTiles, estimateMB, parseGPX, bboxOfPoints, PREP_STEPS } from './zones.js';
 import { bboxAround, bboxKm, fmtNum } from './geo.js';
 import { BASES, OVERLAYS, likelyFrance, inSpain } from './layers.js';
 import { installedVersion, manualCheck } from './updates.js';
@@ -108,22 +108,37 @@ function zoneDialog(z) {
 let ctl = null;
 async function startDownload(opts) {
   if (!online()) return toast('Necesitas conexión para preparar la zona');
+  if (ctl && !ctl.signal.aborted) return toast('Ya hay una zona descargándose');
   try { await navigator.storage?.persist?.(); } catch (e) { }
   ctl = new AbortController();
+  const myCtl = ctl, t0 = Date.now();
   const b = openSheet(html`<p class="kicker">Preparando «${opts.name}»</p><h2 class="title">Descargando…</h2>
-    <p id="zp" class="small">Empezando…</p><div class="bar"><i id="zb"></i></div>
-    <p class="tiny muted">Puedes dejar la app abierta en esta pantalla. Si la cierras, se queda a medias.</p>
+    <p id="zstep" class="small" style="margin:0"><b>Paso 1 de ${PREP_STEPS.length}</b> · ${PREP_STEPS[0]}</p>
+    <p id="zp" class="small muted" style="margin:2px 0 6px">Empezando…</p><div class="bar"><i id="zb" style="width:2%"></i></div>
+    <p class="tiny muted" id="zt">0 s</p>
+    <p class="tiny muted">Puedes cerrar este panel: la descarga sigue y te aviso al terminar. Si cierras la app, se queda a medias.</p>
     <button class="btn sec block" id="zc">Cancelar</button>`);
-  $('#zc', b).onclick = () => ctl.abort();
+  const mine = () => document.body.contains(b) && b.dataset.dl === String(t0);
+  b.dataset.dl = String(t0);
+  const tick = setInterval(() => { if (mine()) $('#zt', b).textContent = `${Math.round((Date.now() - t0) / 1000)} s`; }, 1000);
+  $('#zc', b).onclick = () => {
+    myCtl.abort();
+    const btn = $('#zc', b); btn.disabled = true; btn.textContent = 'Cancelando…';
+    $('#zp', b).textContent = 'Parando la descarga…';
+  };
   try {
-    const z = await prepareZone(opts, ({ phase, done, total }) => {
-      if (!document.body.contains(b)) return;
+    const z = await prepareZone(opts, ({ phase, done, total, step, steps }) => {
+      if (!mine()) return;
+      // los pasos de datos llenan el 30 % de la barra; los mapas, el 70 % restante
+      const pct = step < steps - 1 ? 2 + step * 28 / (steps - 1) : 30 + (total ? done / total * 70 : 0);
+      $('#zstep', b).innerHTML = html`<b>Paso ${step + 1} de ${steps}</b> · ${PREP_STEPS[step]}`;
       $('#zp', b).textContent = total ? `${phase}: ${done.toLocaleString('es-ES')} de ${total.toLocaleString('es-ES')}` : phase + '…';
-      if (total) $('#zb', b).style.width = `${Math.round(done / total * 100)}%`;
-    }, ctl.signal);
+      $('#zb', b).style.width = `${Math.round(pct)}%`;
+    }, myCtl.signal);
     if (opts.replaces) await deleteZoneDataOnly(opts.replaces); // la nueva ya está guardada: ahora sí se quita la antigua
     await getZones(true);
     document.dispatchEvent(new CustomEvent('data-changed'));
+    if (!mine()) { toast(`Zona «${z.name}» lista. Ábrela en Más → Preparar salida (📖)`, 6000); return; }
     b.innerHTML = html`<p class="kicker">Zona lista</p><h2 class="title">${z.name}</h2>
       <p>${z.places?.length || 0} nombres, ${z.cuaderno?.wiki?.length || 0} lugares y ${z.cuaderno?.routes?.length || 0} rutas en el cuaderno, ${z.boundaries?.length || 0} términos municipales, ${z.farPeaks?.length || 0} picos para la brújula, relieve ${z.grid ? '✓' : '✗'}, previsión ${z.forecast ? '✓' : '✗'}, especies ${z.inat ? '✓' : '✗'}, ${z.tiles - (z.tilesFailed || 0)} trozos de mapa.</p>
       ${raw(z.errors?.length ? html`<div class="note">Avisos: ${z.errors.join(' · ')}</div>` : '')}
@@ -132,9 +147,11 @@ async function startDownload(opts) {
     $('#zok', b).onclick = () => { closeSheet(); closeViews(); document.dispatchEvent(new CustomEvent('show-bbox', { detail: z.bbox })); };
     $('#zcu', b).onclick = () => { closeSheet(); openCuaderno(z.id); };
   } catch (e) {
-    if (document.body.contains(b)) b.innerHTML = html`<p class="kicker">Zona</p><h2 class="title">${e.message === 'Cancelado' ? 'Cancelado' : 'Algo falló'}</h2><p>${e.message === 'Cancelado' ? 'Lo descargado hasta ahora se queda guardado.' : e.message}</p>`;
+    const cancel = e.message === 'Cancelado' || e.name === 'AbortError';
     await getZones(true);
-  }
+    if (!mine()) { toast(cancel ? 'Descarga cancelada' : 'La preparación de la zona falló: ' + e.message, 5000); return; }
+    b.innerHTML = html`<p class="kicker">Zona</p><h2 class="title">${cancel ? 'Cancelado' : 'Algo falló'}</h2><p>${cancel ? 'Si ya había empezado a bajar mapas, lo descargado se queda guardado; si no, no se ha guardado nada.' : e.message}</p>`;
+  } finally { clearInterval(tick); if (ctl === myCtl) ctl = null; }
 }
 
 // ---------------- Ajustes ----------------

@@ -20,39 +20,47 @@ export function planTiles(b, opts) {
 const AVG_KB = 22;
 export const estimateMB = n => Math.round(n * AVG_KB / 1024);
 
-async function fetchTile(cache, url) {
+async function fetchTile(cache, url, signal) {
   if (await cache.match(url)) return 'hit';
   let r;
-  try { r = await fetch(url, { mode: 'cors' }); } catch (e) { r = null; }
-  if (!r || (!r.ok && r.type !== 'opaque')) r = await fetch(url, { mode: 'no-cors' });
+  try { r = await fetch(url, { mode: 'cors', signal }); } catch (e) { if (signal?.aborted) throw e; r = null; }
+  if (!r || (!r.ok && r.type !== 'opaque')) r = await fetch(url, { mode: 'no-cors', signal });
   if (r.ok || r.type === 'opaque') { await cache.put(url, r); return 'ok'; }
   throw new Error('tile ' + r.status);
 }
 
+// Pasos de la preparación (para la barra de progreso: los 5 primeros ocupan el 30 %, los mapas el resto)
+export const PREP_STEPS = ['Nombres y lugares', 'Relieve', 'Tiempo', 'Especies', 'Cuaderno', 'Mapas'];
 export async function prepareZone({ name, bbox, track, layers, extraDetail }, onProgress, signal) {
-  const report = (phase, done, total) => onProgress && onProgress({ phase, done, total });
+  let step = 0;
+  const report = (phase, done, total) => onProgress && onProgress({ phase, done, total, step, steps: PREP_STEPS.length });
+  const chk = () => { if (signal?.aborted) throw new Error('Cancelado'); };
   const errors = [];
   const zone = { id: uid(), name, bbox, track: track || null, created: Date.now(), layers, sizeKm: bboxKm(bbox) };
 
   // 1. Datos (ligeros, primero: son lo más valioso)
-  try { Object.assign(zone, await zoneData(bbox, s => report(s, 0, 0))); } catch (e) { errors.push('Nombres y términos: ' + e.message); }
-  if (signal?.aborted) throw new Error('Cancelado');
+  try { Object.assign(zone, await zoneData(bbox, s => report(s, 0, 0), signal)); } catch (e) { chk(); errors.push('Nombres y términos: ' + e.message); }
+  chk(); step = 1;
   report('Relieve (para detectar hondonadas e inversiones)', 0, 0);
-  try { zone.grid = await elevGrid(bbox, 30); } catch (e) { errors.push('Relieve: ' + e.message); }
+  try { zone.grid = await elevGrid(bbox, 30, signal); } catch (e) { chk(); errors.push('Relieve: ' + e.message); }
+  chk(); step = 2;
   const c = [(bbox.s + bbox.n) / 2, (bbox.w + bbox.e) / 2];
   report('Previsión del tiempo (7 días)', 0, 0);
   try {
-    const e = zone.grid ? null : (await elevations([c]))[0];
-    zone.forecast = await forecast(c[0], c[1], e);
-  } catch (e) { errors.push('Tiempo: ' + e.message); }
+    const e = zone.grid ? null : (await elevations([c], signal))[0];
+    zone.forecast = await forecast(c[0], c[1], e, signal);
+  } catch (e) { chk(); errors.push('Tiempo: ' + e.message); }
+  chk(); step = 3;
   report('Especies observadas en la zona (iNaturalist)', 0, 0);
   try {
     const km = Math.max(5, Math.min(25, Math.round(Math.max(zone.sizeKm.w, zone.sizeKm.h) / 2 + 3)));
-    zone.inat = await inatSpecies(c[0], c[1], km);
-  } catch (e) { errors.push('Especies: ' + e.message); }
+    zone.inat = await inatSpecies(c[0], c[1], km, signal);
+  } catch (e) { chk(); errors.push('Especies: ' + e.message); }
+  chk(); step = 4;
   // Cuaderno: lugares (Wikipedia), rutas señalizadas y rocas, para leer sin conexión
-  try { zone.cuaderno = await buildCuaderno(zone, s => report(s, 0, 0), signal); } catch (e) { if (e.message === 'Cancelado') throw e; errors.push('Cuaderno: ' + e.message); }
+  try { zone.cuaderno = await buildCuaderno(zone, s => report(s, 0, 0), signal); } catch (e) { chk(); errors.push('Cuaderno: ' + e.message); }
   await db.put('zones', zone);
+  step = 5;
 
   // 2. Teselas de mapa
   const urls = planTiles(bbox, { layers, extraDetail });
@@ -63,7 +71,7 @@ export async function prepareZone({ name, bbox, track, layers, extraDetail }, on
     while (i < urls.length) {
       if (signal?.aborted) return;
       const u = urls[i++];
-      try { await fetchTile(cache, u); } catch (e) { failed++; }
+      try { await fetchTile(cache, u, signal); } catch (e) { if (signal?.aborted) return; failed++; }
       done++;
       if (done % 10 === 0 || done === urls.length) report('Mapas', done, urls.length);
     }

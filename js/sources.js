@@ -1,5 +1,5 @@
 // Fuentes de datos públicas y gratuitas. Ninguna necesita cuenta salvo Pl@ntNet (opcional).
-import { assembleRings, simplify, destination } from './geo.js';
+import { assembleRings, simplify, destination, pointInRings } from './geo.js';
 
 const OVERPASS = ['https://overpass-api.de/api/interpreter', 'https://overpass.kumi.systems/api/interpreter', 'https://overpass.private.coffee/api/interpreter'];
 const IGME_REST = 'https://mapas.igme.es/gis/rest/services/Cartografia_Geologica/IGME_MAGNA_50/MapServer';
@@ -125,32 +125,86 @@ const PLACE_FILTER = (area) => `
   nwr["building"~"^(farm|farmhouse)$"]["name"](${area});
   nwr["natural"~"^(water|valley|ridge|cliff)$"]["name"](${area});`;
 
-// Datos de una zona completa (para usar sin cobertura)
-export async function zoneData(b, onStep = () => { }) {
+// Datos de una zona completa (para usar sin cobertura).
+// Cada paso tiene un tiempo máximo y se puede cancelar (signal). Si OpenStreetMap (Overpass) no responde,
+// los nombres salen de Photon y los picos de Wikidata, para que la preparación no se quede parada.
+export async function zoneData(b, onStep = () => { }, signal) {
+  const chk = () => { if (signal?.aborted) throw new Error('Cancelado'); };
   const bb = `${b.s},${b.w},${b.n},${b.e}`;
-  onStep('Nombres de picos, masías, fuentes y barrancos');
-  const q1 = `[out:json][timeout:90];(${PLACE_FILTER(bb)});out center tags;way["waterway"~"^(river|stream)$"]["name"](${bb});out geom;`;
-  const d1 = await overpass(q1, 100000, { stagger: 40000 });
-  const { places, waters } = parsePlaces(d1.elements);
-
-  onStep('Términos municipales y comarcas');
-  const q2 = `[out:json][timeout:120];rel["boundary"="administrative"]["admin_level"~"^(7|8)$"](${bb});out geom;`;
-  let boundaries = [];
-  try { boundaries = parseBoundaries((await overpass(q2, 130000, { stagger: 40000 })).elements); } catch (e) { console.warn('límites', e); }
-
-  onStep('Picos lejanos (para la brújula, 50 km)');
   const cLat = (b.s + b.n) / 2, cLon = (b.w + b.e) / 2;
-  const q3 = `[out:json][timeout:90];node["natural"~"^(peak|volcano)$"]["name"](around:50000,${cLat},${cLon});out;`;
+  onStep('Nombres de picos, masías, fuentes y barrancos');
+  let places = [], waters = [], namesSource = 'OpenStreetMap';
+  try {
+    const q1 = `[out:json][timeout:25];(${PLACE_FILTER(bb)});out center tags;way["waterway"~"^(river|stream)$"]["name"](${bb});out geom;`;
+    ({ places, waters } = parsePlaces((await withBudget(25000, signal, s => overpass(q1, 25000, { stagger: 8000, signal: s }))).elements));
+  } catch (e) {
+    chk();
+    onStep('OpenStreetMap no responde: nombres por otra vía (Photon)');
+    ({ places, waters } = await photonZone(b, signal));
+    namesSource = 'OpenStreetMap (vía Photon, menos completo)';
+  }
+  chk();
+  onStep('Términos municipales');
+  let boundaries = [];
+  try { boundaries = await boundariesNominatim(b, signal); } catch (e) { chk(); console.warn('límites', e); }
+  onStep('Picos lejanos (para la brújula, 50 km)');
   let farPeaks = [];
-  try { farPeaks = parsePlaces((await overpass(q3, 100000, { stagger: 40000 })).elements).places.filter(p => p.ele); } catch (e) { console.warn('picos', e); }
-
+  try { farPeaks = (await peaksAround(cLat, cLon, 50000, { signal })).peaks; } catch (e) { chk(); console.warn('picos', e); }
+  chk();
   onStep('Provincia y país');
   let admin = {};
   try { admin = await adminAt(cLat, cLon); } catch (e) { }
-  return { places, waters, boundaries, farPeaks, admin };
+  return { places, waters, boundaries, farPeaks, admin, namesSource };
+}
+// Ejecuta fn(signal) con un tiempo máximo total; al pasarlo, cancela y lanza «tiempo agotado»
+async function withBudget(ms, outer, fn) {
+  const ctl = new AbortController();
+  const stop = () => ctl.abort();
+  outer?.addEventListener('abort', stop);
+  const t = setTimeout(stop, ms);
+  try { return await fn(ctl.signal); }
+  catch (e) { if (outer?.aborted) throw new Error('Cancelado'); if (ctl.signal.aborted) throw new SourceError('timeout', 'Tiempo agotado'); throw e; }
+  finally { clearTimeout(t); outer?.removeEventListener('abort', stop); }
+}
+// Términos municipales de una zona con Nominatim (límites de OpenStreetMap, rápido y fiable).
+// Se consulta una malla de puntos, de uno en uno (Nominatim pide como mucho una petición por segundo).
+async function boundariesNominatim(b, signal) {
+  const n = Math.max(b.n - b.s, b.e - b.w) > 0.2 ? 4 : Math.max(b.n - b.s, b.e - b.w) > 0.08 ? 3 : 2;
+  const seen = new Map();
+  for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) {
+    if (signal?.aborted) throw new Error('Cancelado');
+    const la = b.s + (b.n - b.s) * (j + 0.5) / n, lo = b.w + (b.e - b.w) * (i + 0.5) / n;
+    if ([...seen.values()].some(x => pointInRings(la, lo, x.rings))) continue; // ya cubierto por un término descargado
+    try {
+      const d = await getJSON(`https://nominatim.openstreetmap.org/reverse?lat=${la.toFixed(5)}&lon=${lo.toFixed(5)}&zoom=10&format=jsonv2&polygon_geojson=1&polygon_threshold=0.0003&accept-language=es`, { signal }, 10000);
+      const g = d?.geojson;
+      if (d?.osm_id && g && !seen.has(d.osm_id)) {
+        const polys = g.type === 'Polygon' ? [g.coordinates] : g.type === 'MultiPolygon' ? g.coordinates : [];
+        const rings = polys.map(p => p[0].map(([x, y]) => [y, x]));
+        if (rings.length) seen.set(d.osm_id, { name: d.name, level: 8, rings });
+      }
+    } catch (e) { if (signal?.aborted) throw new Error('Cancelado'); }
+    await new Promise(r => setTimeout(r, 1100));
+  }
+  return [...seen.values()];
+}
+// Nombres de toda una zona con Photon: varios puntos repartidos (Photon devuelve como mucho 50 por consulta)
+async function photonZone(b, signal) {
+  const places = [], waters = [], seen = new Set();
+  const n = Math.max(b.n - b.s, b.e - b.w) > 0.15 ? 3 : 2;
+  const km = Math.max(3, Math.round(Math.max((b.n - b.s) * 111, (b.e - b.w) * 85) / n * 0.75));
+  for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) {
+    if (signal?.aborted) throw new Error('Cancelado');
+    const la = b.s + (b.n - b.s) * (j + 0.5) / n, lo = b.w + (b.e - b.w) * (i + 0.5) / n;
+    try {
+      const r = await photonAround(la, lo, km, { signal });
+      for (const p of r.places) { const k = p.name + p.kind + Math.round(p.lat * 1000); if (!seen.has(k)) { seen.add(k); places.push(p); } }
+      for (const w of r.waters) if (!waters.some(x => x.name === w.name)) waters.push(w);
+    } catch (e) { if (signal?.aborted) throw new Error('Cancelado'); }
+  }
+  return { places, waters };
 }
 
-// Términos municipales en un punto (en línea)
 // Municipio, comarca, provincia… Primero Nominatim (usa los límites municipales de OpenStreetMap y
 // responde rápido); si falla, Overpass; si también falla, Photon (menos fiable: lo marca como aproximado).
 export async function adminAt(lat, lon) {
@@ -222,12 +276,12 @@ export async function placesAround(lat, lon, radius = 5000, { wait = 4000 } = {}
   return await osm; // último intento: esperar a Overpass (o su error)
 }
 const PHOTON_TAGS = ['natural:peak', 'natural:saddle', 'natural:spring', 'natural:cave_entrance', 'natural:valley', 'natural:ridge', 'natural:cliff', 'natural:water', 'natural:tree', 'place:village', 'place:hamlet', 'place:isolated_dwelling', 'place:farm', 'place:locality', 'tourism:viewpoint', 'tourism:alpine_hut', 'tourism:wilderness_hut', 'amenity:shelter', 'mountain_pass', 'waterway:river', 'waterway:stream'];
-export async function photonAround(lat, lon, km = 6) {
+export async function photonAround(lat, lon, km = 6, { signal } = {}) {
   const base = `https://photon.komoot.io/reverse?lat=${lat.toFixed(5)}&lon=${lon.toFixed(5)}&radius=${km}&limit=50`;
   // dos consultas: todo lo cercano y, aparte, picos (si no, los picos quedan fuera de los 50 más próximos)
   const [all, peaks] = await Promise.all([
-    getJSON(base + '&' + PHOTON_TAGS.map(t => 'osm_tag=' + t).join('&'), {}, 8000),
-    getJSON(base + '&osm_tag=natural:peak&limit=20', {}, 8000).catch(() => null),
+    getJSON(base + '&' + PHOTON_TAGS.map(t => 'osm_tag=' + t).join('&'), { signal }, 8000),
+    getJSON(base + '&osm_tag=natural:peak&limit=20', { signal }, 8000).catch(() => null),
   ]);
   return { ...parsePhotonPlaces([...(all?.features || []), ...(peaks?.features || [])]), source: 'OpenStreetMap (vía Photon)' };
 }
@@ -353,22 +407,22 @@ export async function inatTop(lat, lon, radiusKm = 10) {
 }
 
 // Altitud (modelo Copernicus 90 m vía Open-Meteo); hasta 100 puntos por llamada
-export async function elevations(points) {
+export async function elevations(points, signal) {
   const out = [];
   for (let i = 0; i < points.length; i += 100) {
     const ch = points.slice(i, i + 100);
     const u = `https://api.open-meteo.com/v1/elevation?latitude=${ch.map(p => p[0].toFixed(5)).join(',')}&longitude=${ch.map(p => p[1].toFixed(5)).join(',')}`;
-    const d = await getJSON(u);
+    const d = await getJSON(u, { signal });
     out.push(...d.elevation);
   }
   return out;
 }
 
-export async function elevGrid(b, n = 30) {
+export async function elevGrid(b, n = 30, signal) {
   const pts = [];
   for (let j = 0; j < n; j++) for (let i = 0; i < n; i++)
     pts.push([b.s + (b.n - b.s) * j / (n - 1), b.w + (b.e - b.w) * i / (n - 1)]);
-  const values = await elevations(pts);
+  const values = await elevations(pts, signal);
   return { n, bbox: b, values };
 }
 
@@ -404,12 +458,12 @@ export function terrainFromGrid(g, lat, lon) {
 }
 
 // Tiempo (Open-Meteo, modelos de AEMET/Météo-France/ECMWF combinados)
-export async function forecast(lat, lon, ele) {
+export async function forecast(lat, lon, ele, signal) {
   const u = `https://api.open-meteo.com/v1/forecast?latitude=${lat.toFixed(4)}&longitude=${lon.toFixed(4)}` + (ele != null ? `&elevation=${Math.round(ele)}` : '') +
     `&current=temperature_2m,relative_humidity_2m,wind_speed_10m,wind_direction_10m,cloud_cover,weather_code` +
     `&hourly=temperature_2m,cloud_cover,wind_speed_10m,precipitation_probability,snowfall,freezing_level_height,weather_code` +
     `&daily=temperature_2m_max,temperature_2m_min,sunrise,sunset,weather_code,precipitation_sum,wind_speed_10m_max&timezone=auto&forecast_days=7`;
-  const d = await getJSON(u);
+  const d = await getJSON(u, { signal });
   d.fetchedAt = Date.now();
   return d;
 }
@@ -430,14 +484,15 @@ export const igmeViewer = (lat, lon) => `https://info.igme.es/visor/?Configuraci
 
 // Especies observadas por la gente (iNaturalist, grado investigación)
 export const INAT_GROUPS = { Mammalia: 'Mamíferos', Aves: 'Aves', Plantae: 'Plantas', Reptilia: 'Reptiles', Amphibia: 'Anfibios', Insecta: 'Insectos', Fungi: 'Hongos' };
-export async function inatSpecies(lat, lon, radiusKm = 10) {
+export async function inatSpecies(lat, lon, radiusKm = 10, signal) {
   const out = {};
   for (const g of Object.keys(INAT_GROUPS)) {
     try {
       const u = `https://api.inaturalist.org/v1/observations/species_counts?lat=${lat.toFixed(4)}&lng=${lon.toFixed(4)}&radius=${radiusKm}&iconic_taxa=${g}&quality_grade=research&locale=es&per_page=25`;
-      const d = await getJSON(u, {}, 20000);
+      if (signal?.aborted) throw new Error('Cancelado');
+      const d = await getJSON(u, { signal }, 20000);
       out[g] = d.results.map(r => ({ sci: r.taxon.name, common: r.taxon.preferred_common_name || '', count: r.count, photo: r.taxon.default_photo?.square_url || null, id: r.taxon.id }));
-    } catch (e) { out[g] = []; }
+    } catch (e) { if (signal?.aborted) throw new Error('Cancelado'); out[g] = []; }
   }
   return out;
 }

@@ -43,16 +43,16 @@ h1, h2, h3 { font-family: var(--serif); letter-spacing: -0.01em; }
 .sheet { position: fixed; left: 0; right: 0; bottom: calc(var(--tabh) + var(--sab)); max-height: 78vh; background: var(--paper); border-radius: 18px 18px 0 0; box-shadow: 0 -4px 24px rgba(0,0,0,.25); z-index: 870; display: flex; flex-direction: column; }
 .sheet.tall { max-height: calc(100vh - var(--sat) - var(--tabh) - var(--sab) - 20px); }
 .sheet-grip { width: 40px; height: 5px; background: #cfc8ba; border-radius: 3px; margin: 8px auto 2px; flex: none; }
-.sheet-close { position: absolute; right: 10px; top: 8px; border: 0; background: #ebe5d9; width: 30px; height: 30px; border-radius: 50%; font-size: 14px; }
-.sheet-body { overflow-y: auto; padding: 4px 16px 20px; -webkit-overflow-scrolling: touch; }
+.sheet-close { position: absolute; right: 6px; top: 4px; border: 0; background: #ebe5d9; background-clip: content-box; padding: 6px; width: 44px; height: 44px; border-radius: 50%; font-size: 15px; z-index: 5; touch-action: manipulation; } /* 44 px: tamaño mínimo cómodo para el dedo; por encima del contenido que se desplaza */
+.sheet-body { overflow-y: auto; padding: 4px 16px 20px; overscroll-behavior: contain; } /* sin -webkit-overflow-scrolling: en iPhone tapaba la X */
 
 /* Vistas a pantalla completa */
 .view { position: fixed; inset: 0; bottom: calc(var(--tabh) + var(--sab)); background: var(--paper); z-index: 800; display: flex; flex-direction: column; }
 .view-head { padding: calc(var(--sat) + 8px) 12px 8px; display: flex; align-items: center; gap: 6px; border-bottom: 1px solid var(--line); background: var(--paper); }
 .view-head h1 { font-size: 22px; margin: 0; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.view-head .back { border: 0; background: none; font-size: 30px; line-height: 1; padding: 0 6px 4px; color: var(--forest); }
+.view-head .back { border: 0; background: none; font-size: 30px; line-height: 1; padding: 0 6px 4px; min-width: 44px; min-height: 44px; color: var(--forest); position: relative; z-index: 5; }
 .view-head .back.invisible { visibility: hidden; width: 0; padding: 0; }
-.view-body { flex: 1; overflow-y: auto; padding: 12px 14px 30px; -webkit-overflow-scrolling: touch; }
+.view-body { flex: 1; overflow-y: auto; padding: 12px 14px 30px; overscroll-behavior: contain; }
 .view-tools { display: flex; gap: 6px; }
 
 /* Modal */
@@ -195,3 +195,6 @@ details.sub { border-top: 1px solid #e6e2d8; padding: 6px 0; }
 details.sub summary { cursor: pointer; font-weight: 600; }
 .route { border-top: 1px solid #e6e2d8; padding: 8px 0; }
 #cunotes { width: 100%; font-size: 16px; border-radius: 10px; border: 1px solid #ccd3cf; padding: 8px; }
+
+button, .tile, .chip-b, [data-sp], [data-art] { touch-action: manipulation; } /* respuesta inmediata al toque */
+.list.best li { background: #eef3ec; border-radius: 12px; padding: 10px; }

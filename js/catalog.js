@@ -24,7 +24,7 @@ export function stem(w) {
   if (s.length > 4 && /[aoe]$/.test(s)) s = s.slice(0, -1);
   return s;
 }
-const STOP = new Set('el la los las un una unos unas de del al a en y o u que qué con sin por para como cómo es son se su sus mi me lo le les hay muy mas más pero este esta esto ese esa eso aqui aquí alli allí donde dónde cual cuál cuales quien quién cuando cuándo tiene tienen tengo ver visto vi he ha han hace hacen sobre entre algo alguna alguno tipo cosa cosas tan ya tambien también no si sí puede pueden ser estar está estoy junto color forma especie especies encontrado encontre vi visto ves'.split(' ').map(norm));
+const STOP = new Set('el la los las un una unos unas de del al a en y o u que qué con sin por para como cómo es son se su sus mi me lo le les hay muy mas más pero este esta esto ese esa eso aqui aquí alli allí donde dónde cual cuál cuales quien quién cuando cuándo tiene tienen tengo ver visto vi he ha han hace hacen sobre entre algo alguna alguno tipo cosa cosas tan ya tambien también no si sí puede pueden ser estar está estoy junto color forma especie especies encontrado encontre vi visto ves parecia parece parecido creo era seria será sera habia había alguien'.split(' ').map(norm));
 export const tokens = s => norm(s).split(/[\s-]+/).filter(w => w && !STOP.has(w));
 
 // Sinónimos y palabras de la calle → términos del vocabulario de Otero
@@ -34,9 +34,9 @@ const SYN = {
   negr: 'negro', gri: 'gris', rosa: 'rosa', oscur: 'negro', blanc: 'blanco', blanquecin: 'blanco', gris: 'gris', grisace: 'gris', pard: 'pardo', marron: 'pardo', castan: 'pardo',
   morad: 'morado', violet: 'morado', lila: 'morado', purpur: 'morado', ros: 'rosa', rosad: 'rosa',
   arbol: '#arb', arbust: '#arb', mata: '#arb', pajar: '#ave', ave: '#ave', pajaro: '#ave', bich: '#ins', insect: '#ins', mariposa: 'mariposa',
-  seta: '#hon', hong: '#hon', liquen: ['#hon', 'liquen'], culebr: ['#rep', 'serpiente'], vibor: ['#rep', 'serpiente'], serpient: ['#rep', 'serpiente'], lagartij: ['#rep', 'lagarto'], lagart: ['#rep', 'lagarto'], salamanques: ['#rep', 'salamanquesa'], tortug: ['#rep', 'tortuga'],
+  seta: ['#hon', '!liquen'], hong: ['#hon', '!liquen'], liquen: ['#hon', 'liquen'], culebr: ['#rep', 'serpiente'], vibor: ['#rep', 'serpiente'], serpient: ['#rep', 'serpiente'], lagartij: ['#rep', 'lagarto'], lagart: ['#rep', 'lagarto'], salamanques: ['#rep', 'salamanquesa'], tortug: ['#rep', 'tortuga'],
   ran: ['#anf', 'rana'], rana: ['#anf', 'rana'], sap: ['#anf', 'sapo'], sapo: ['#anf', 'sapo'], salamandr: ['#anf', 'salamandra'], trito: ['#anf', 'triton'], flor: '#pla', plant: '#pla', hierb: '#pla', helech: ['#pla', 'helecho'],
-  pared: 'roquedo', roqued: 'roquedo', roc: ['~#roc', 'roquedo'], roca: ['~#roc', 'roquedo'], piedr: ['~#roc', 'canchal'], mineral: ['#roc', 'mineral'], fosil: ['#roc', 'fosil'], mamifer: '#mam', animal: '#animal', trep: 'trepa', pin: 'pinar', pino: 'pinar', encin: 'bosque-mediterraneo', hay: 'bosque-caducifolio', mariposa: ['#ins', 'mariposa'], polill: ['#ins', 'polilla'], escarabaj: ['#ins', 'escarabajo'], arañ: ['#ins', 'arana'], aran: ['#ins', 'arana'], escorpion: ['#ins', 'escorpion'], libelul: ['#ins', 'libelula'], hormig: ['#ins', 'hormiga'], avisp: ['#ins', 'avispa'], abej: ['#ins', 'abeja'], saltamont: ['#ins', 'saltamontes'], rapaz: ['#ave', 'rapaz'], aguil: '#ave', buho: '#ave', buh: '#ave', pic: 'pico', canta: 'canto', cantan: 'canto',
+  pared: 'roquedo', roqued: 'roquedo', roc: ['~#roc', 'roquedo'], roca: ['~#roc', 'roquedo'], piedr: ['~#roc', 'canchal'], mineral: ['#roc', 'mineral'], fosil: ['#roc', 'fosil'], mamifer: '#mam', animal: '#animal', trep: 'trepa', pin: ['pino', 'pinar'], pino: ['pino', 'pinar'], encin: 'bosque-mediterraneo', hay: 'bosque-caducifolio', mariposa: ['#ins', 'mariposa'], polill: ['#ins', 'polilla'], escarabaj: ['#ins', 'escarabajo'], arañ: ['#ins', 'arana'], aran: ['#ins', 'arana'], escorpion: ['#ins', 'escorpion'], libelul: ['#ins', 'libelula'], hormig: ['#ins', 'hormiga'], avisp: ['#ins', 'avispa'], abej: ['#ins', 'abeja'], saltamont: ['#ins', 'saltamontes'], rapaz: ['#ave', 'rapaz'], aguil: '#ave', buho: '#ave', buh: '#ave', pic: 'pico', canta: 'canto', cantan: 'canto',
   pinch: 'espinosa', espin: 'espinosa', pincho: 'espinosa', agujas: 'aguja', aguj: 'aguja', bellot: 'bellota', piñ: 'pina', pina: 'pina',
   baya: 'baya', rio: 'ribera', arroy: 'ribera', barranc: 'umbria', agua: 'agua-dulce', lago: 'agua-dulce', charc: 'agua-dulce',
   cumbr: 'alta-montana', cima: 'alta-montana', cortad: 'roquedo', robledal: 'bosque-caducifolio', pinar: 'pinar', hayed: 'bosque-caducifolio',
@@ -52,9 +52,12 @@ let INDEX = null;
 const W = { name: 12, sci: 8, alt_n: 8, trait: 5, sub: 4, group: 3, zone: 2, text: 1 };
 function addTokens(map, text, w) { for (const t of tokens(text)) { const s = stem(t); map.set(s, Math.max(map.get(s) || 0, w)); } }
 
+// Palabras corrientes dentro de los nombres («Fresno de hoja ancha», «Rosa común»): no identifican la especie
+const GENERIC = new Set(['hoj', 'hoja', 'flor', 'frut', 'comun', 'grand', 'pequen', 'montan', 'alt', 'baj', 'falso', 'fals', 'tipo', 'ancha', 'anch', 'estrech']);
+function addName(m, text, w) { for (const t of tokens(text)) { const s = stem(t); const ww = GENERIC.has(s) ? 3 : w; m.set(s, Math.max(m.get(s) || 0, ww)); } }
 function indexEntry(e) {
   const m = new Map(), traitVals = new Set();
-  addTokens(m, e.n, W.name); addTokens(m, e.sci, W.sci); (e.alt_n || []).forEach(a => addTokens(m, a, W.alt_n));
+  addName(m, e.n, W.name); addTokens(m, e.sci, W.sci); (e.alt_n || []).forEach(a => addName(m, a, W.alt_n));
   const tg = TRAITS[e.g] || {};
   for (const [k, vals] of Object.entries(e.t || {})) for (const v of [].concat(vals)) {
     traitVals.add(v); traitVals.add(k + ':' + v);
@@ -89,13 +92,15 @@ export function buildIndex() {
 // ---------- Entender la pregunta ----------
 export function parseQuery(q, { here } = {}) {
   const raw = tokens(q);
-  const terms = [], groups = new Set(), soft = new Set(), zones = new Set(), notes = [];
+  const terms = [], groups = new Set(), soft = new Set(), zones = new Set(), notes = [], notSub = new Set();
   let alt = null;
   const nq = norm(q);
   // ¿Qué tipo de pregunta es? (significado de un nombre, una huella…)
   const intent = /signific|quiere decir|de donde viene|origen del nombre|toponim/.test(nq) ? 'nombre' : /\bhuell|\brastro|excrement|\bcaca|cagarrut|\bexcremento/.test(nq) ? 'huella' : null;
-  const am = nq.match(/(\d{3,4})\s*(m|metros)\b/);
-  if (am) alt = +am[1];
+  // «a más de 2000 m», «por encima de 1800», «por debajo de 1000 metros», «a 1500 m»
+  let altCmp = null;
+  const am = nq.match(/(mas de|por encima de|encima de|sobre|superior a|arriba de|menos de|por debajo de|debajo de|inferior a)?\s*(los\s*)?(\d{3,4})\s*(m|metros|msnm)?\b/);
+  if (am && (am[4] || am[1])) { alt = +am[3]; altCmp = !am[1] ? 'at' : /menos|debajo|inferior/.test(am[1]) ? 'max' : 'min'; }
   if (/\baqui\b|\bdonde estoy\b|\bcerca\b/.test(nq) && here?.group) { zones.add(here.group); notes.push(`zona: ${ZONAS[here.group]}`); }
   // sierras o zonas nombradas
   for (const r of REGIONS) {
@@ -108,14 +113,15 @@ export function parseQuery(q, { here } = {}) {
     const syns = [].concat(SYN[s] || SYN[w] || []);
     let termSyn = null;
     for (const syn of syns) {
-      if (syn.startsWith('~#')) soft.add(syn.slice(2));
+      if (syn.startsWith('!')) notSub.add(syn.slice(1));
+      else if (syn.startsWith('~#')) soft.add(syn.slice(2));
       else if (syn.startsWith('#')) { if (PER_GROUP_TOKENS[syn]) PER_GROUP_TOKENS[syn].forEach(g => groups.add(g)); else groups.add(syn.slice(1)); }
       else termSyn = syn;
     }
-    if (termSyn || !syns.length) terms.push({ w, s, syn: termSyn });
+    if (termSyn || !syns.length) terms.push({ w, s, syn: termSyn, syns: syns.filter(x => !/^[#~!]/.test(x)) });
   }
   // «roca» sola = buscar rocas; «roca» con un grupo de seres vivos = roquedo (hábitat)
-  return { terms: intent === 'nombre' ? terms.filter(t => !/^signific|^nombre|^quier|^decir/.test(t.s)) : terms, groups: [...groups], soft: groups.size ? [] : [...soft], zones: [...zones], alt, notes, intent };
+  return { notSub: [...notSub], altCmp, terms: intent === 'nombre' ? terms.filter(t => !/^signific|^nombre|^quier|^decir/.test(t.s)) : terms, groups: [...groups], soft: groups.size ? [] : [...soft], zones: [...zones], alt, notes, intent };
 }
 
 // ---------- Buscar ----------
@@ -127,19 +133,32 @@ export function search(q, opts = {}) {
   for (const it of idx) {
     let score = 0; const why = [];
     for (const t of pq.terms) {
-      // si la palabra se ha traducido a un término de Otero, la coincidencia literal pesa la mitad
-      const lit = Math.max(it.m.get(t.s) || 0, it.m.get(t.w) || 0) * (t.syn && t.syn !== t.w ? 0.5 : 1);
-      const v = Math.max(lit, t.syn ? (it.m.get(t.syn) || it.m.get(stem(t.syn)) || 0) : 0);
-      if (v) { score += v; if (v >= W.trait && it.kind === 'entry') why.push(t.syn || t.w); }
+      // si la palabra se ha traducido a otro término de Otero, la coincidencia literal pesa la mitad
+      const keepsWord = !t.syns?.length || t.syns.some(x => stem(x) === t.s || x === t.w);
+      const lit = Math.max(it.m.get(t.s) || 0, it.m.get(t.w) || 0) * (keepsWord ? 1 : 0.5);
+      const v = Math.max(lit, ...(t.syns || []).map(x => it.m.get(x) || it.m.get(stem(x)) || 0));
+      if (it.kind === 'entry' && v >= W.name) why.push('nombre');
+      if (v) { score += v; if (v >= W.trait && v < W.name && it.kind === 'entry') why.push(lit >= v ? t.w : (t.syns || []).find(x => (it.m.get(x) || it.m.get(stem(x))) === v) || t.w); }
       // prefijo (p. ej. «quebranta» → quebrantahuesos), solo para palabras largas
       else if (t.s.length >= 5) { for (const [k, w] of it.m) if (w >= 8 && k.startsWith(t.s)) { score += w / 2; break; } }
     }
     if (it.kind === 'entry') {
       const e = it.e;
-      if (pq.groups.length) { if (pq.groups.includes(e.g)) score += pq.terms.length ? 3 : 4; else score -= 6; }
+      if (pq.groups.length && !pq.groups.includes(e.g)) continue; // preguntan por árboles: solo árboles
+      if (pq.notSub.includes(e.sub)) continue; // «seta» no es un liquen
+      if (pq.groups.length) score += pq.terms.length ? 3 : 4;
       if (pq.soft.includes(e.g)) score += 3;
       if (pq.zones.length) { if ((e.r || []).some(z => pq.zones.includes(z))) { score += 3; } else if (score > 0) score -= 4; }
-      if (pq.alt != null && e.alt) { if (pq.alt >= e.alt[0] - 150 && pq.alt <= e.alt[1] + 150) score += 2; else score -= 4; }
+      // altitud: descarta lo que no llega y premia lo que vive sobre todo en ese rango
+      if (pq.alt != null && e.alt) {
+        const [lo, hi] = e.alt, span = Math.max(100, hi - lo);
+        const mid = (lo + hi) / 2;
+        if (pq.altCmp === 'min') { if (hi < pq.alt) continue; score += 10 * Math.min(1, (hi - Math.max(lo, pq.alt)) / span) + (mid >= pq.alt ? 4 : 0); why.push(`vive entre ${lo} y ${hi} m`); }
+        else if (pq.altCmp === 'max') { if (lo > pq.alt) continue; score += 10 * Math.min(1, (Math.min(hi, pq.alt) - lo) / span) + (mid <= pq.alt ? 4 : 0); why.push(`vive entre ${lo} y ${hi} m`); }
+        else { if (pq.alt < lo - 150 || pq.alt > hi + 150) continue; score += 3; }
+      }
+      // la zona donde estás (si la sabemos) cuenta un poco aunque no la nombres
+      if (opts.here?.group && !pq.zones.length && (e.r || []).includes(opts.here.group)) { score += 2; why.push('en tu zona'); }
     } else if (pq.groups.length && !pq.terms.length) score = 0;
     else if (pq.groups.length) score *= 0.5; // preguntan por un ser vivo o una roca: lo demás, menos
     if (pq.intent === 'nombre') score *= it.kind === 'topo' ? 2.5 : 0.4;
@@ -149,7 +168,8 @@ export function search(q, opts = {}) {
   res.sort((a, b) => b.score - a.score);
   // quitar resultados muy por debajo del mejor
   const top = res[0]?.score || 0;
-  return { pq, results: res.filter(r => r.score >= Math.max(2, top * 0.25)).slice(0, 60) };
+  // si hay una coincidencia clara, no rellenar con resultados flojos
+  return { pq, results: res.filter(r => r.score >= Math.max(2, top * (top >= 12 ? 0.5 : 0.25))).slice(0, 60) };
 }
 
 // ---------- Filtro por rasgos (pestaña Especies/Rocas) ----------

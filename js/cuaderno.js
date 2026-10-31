@@ -14,10 +14,13 @@ import { getZones } from './zones.js';
 import { INAT_GROUPS } from './sources.js';
 
 // ---------- Recopilar ----------
+let SIG = null; // señal de cancelación de la recopilación en curso
+const get = (u, ms) => { if (SIG?.aborted) throw new Error('Cancelado'); return getJSON(u, { signal: SIG }, ms); };
 export async function buildCuaderno(zone, onStep = () => { }, signal) {
   const b = zone.bbox, c = { lat: (b.s + b.n) / 2, lon: (b.w + b.e) / 2 };
   const cu = { built: Date.now(), errors: [] };
-  const step = async (name, fn) => { if (signal?.aborted) throw new Error('Cancelado'); onStep(name); try { await fn(); } catch (e) { cu.errors.push(`${name}: ${e.message}`); } };
+  SIG = signal || null;
+  const step = async (name, fn) => { if (signal?.aborted) throw new Error('Cancelado'); onStep(name); try { await fn(); } catch (e) { if (signal?.aborted) throw new Error('Cancelado'); cu.errors.push(`${name}: ${e.message}`); } };
   await step('Cuaderno: pueblos y lugares (Wikipedia)', async () => { cu.wiki = await wikiAround(b, c); });
   await step('Cuaderno: rutas señalizadas', async () => { cu.routes = await routesIn(b); });
   await step('Cuaderno: rocas de la zona', async () => { cu.rocks = await rocksIn(b); });
@@ -31,14 +34,14 @@ async function wikiAround(b, c) {
   if (Math.max(b.n - b.s, b.e - b.w) > 0.12) for (const [i, j] of [[-1, -1], [-1, 1], [1, -1], [1, 1]]) pts.push([c.lat + i * dLat, c.lon + j * dLon]);
   const pages = new Map();
   for (const [la, lo] of pts) {
-    const d = await getJSON(`https://es.wikipedia.org/w/api.php?action=query&list=geosearch&gscoord=${la.toFixed(5)}%7C${lo.toFixed(5)}&gsradius=10000&gslimit=60&format=json&origin=*`, {}, 15000);
+    const d = await get(`https://es.wikipedia.org/w/api.php?action=query&list=geosearch&gscoord=${la.toFixed(5)}%7C${lo.toFixed(5)}&gsradius=10000&gslimit=60&format=json&origin=*`, 15000);
     for (const p of d?.query?.geosearch || []) if (p.lat >= b.s && p.lat <= b.n && p.lon >= b.w && p.lon <= b.e) pages.set(p.pageid, p);
   }
   const list = [...pages.values()].map(p => ({ ...p, d: distance(c.lat, c.lon, p.lat, p.lon) })).sort((a, b) => a.d - b.d).slice(0, 40);
   const out = [];
   for (let i = 0; i < list.length; i += 20) {
     const ids = list.slice(i, i + 20).map(p => p.pageid).join('|');
-    const d = await getJSON(`https://es.wikipedia.org/w/api.php?action=query&prop=extracts&exintro=1&explaintext=1&exlimit=20&pageids=${ids}&format=json&origin=*`, {}, 15000);
+    const d = await get(`https://es.wikipedia.org/w/api.php?action=query&prop=extracts&exintro=1&explaintext=1&exlimit=20&pageids=${ids}&format=json&origin=*`, 15000);
     for (const p of list.slice(i, i + 20)) {
       const ex = d?.query?.pages?.[p.pageid]?.extract?.trim();
       if (ex) out.push({ title: p.title, extract: ex.slice(0, 1800), lat: p.lat, lon: p.lon, url: `https://es.wikipedia.org/?curid=${p.pageid}` });
@@ -51,12 +54,12 @@ async function wikiAround(b, c) {
 const to3857 = (lat, lon) => [lon * 20037508.34 / 180, Math.log(Math.tan((90 + lat) * Math.PI / 360)) / (Math.PI / 180) * 20037508.34 / 180];
 async function routesIn(b) {
   const [x1, y1] = to3857(b.s, b.w), [x2, y2] = to3857(b.n, b.e);
-  const d = await getJSON(`https://hiking.waymarkedtrails.org/api/v1/list/by_area?bbox=${Math.round(x1)},${Math.round(y1)},${Math.round(x2)},${Math.round(y2)}&limit=40`, {}, 20000);
+  const d = await get(`https://hiking.waymarkedtrails.org/api/v1/list/by_area?bbox=${Math.round(x1)},${Math.round(y1)},${Math.round(x2)},${Math.round(y2)}&limit=40`, 20000);
   const routes = [];
   for (const r of (d?.results || []).slice(0, 30)) {
     const item = { id: r.id, ref: r.ref || '', name: r.name || r.ref || 'Ruta sin nombre', group: r.group, via: r.itinerary || [] };
     try {
-      const det = await getJSON(`https://hiking.waymarkedtrails.org/api/v1/details/relation/${r.id}`, {}, 12000);
+      const det = await get(`https://hiking.waymarkedtrails.org/api/v1/details/relation/${r.id}`, 12000);
       const len = det.official_length || det.route?.length;
       item.km = len ? Math.round(len / 100) / 10 : null;
       item.url = det.url || det.tags?.website || null;
@@ -72,7 +75,7 @@ async function routesIn(b) {
 }
 // Trazado de una relación de OpenStreetMap → polilíneas simplificadas [[lat, lon], …]
 async function routeGeometry(id) {
-  const d = await getJSON(`https://api.openstreetmap.org/api/0.6/relation/${id}/full.json`, {}, 20000);
+  const d = await get(`https://api.openstreetmap.org/api/0.6/relation/${id}/full.json`, 20000);
   const nodes = new Map(), lines = [];
   for (const e of d.elements || []) if (e.type === 'node') nodes.set(e.id, [e.lat, e.lon]);
   for (const e of d.elements || []) if (e.type === 'way') { const pts = e.nodes.map(n => nodes.get(n)).filter(Boolean); if (pts.length > 1) lines.push(simplify(pts, 0.00008)); }
@@ -85,6 +88,7 @@ async function rocksIn(b) {
   const seen = new Map();
   for (const fy of [0.2, 0.5, 0.8]) for (const fx of [0.2, 0.5, 0.8]) {
     const la = b.s + (b.n - b.s) * fy, lo = b.w + (b.e - b.w) * fx;
+    if (SIG?.aborted) throw new Error('Cancelado');
     const g = es ? await geologyAt(la, lo).catch(() => null) : await macrostratAt(la, lo).catch(() => null);
     const desc = g ? (g.fields.map(f => f[1]).join(' · ') || g.value) : null;
     if (desc) seen.set(desc, (seen.get(desc) || 0) + 1);

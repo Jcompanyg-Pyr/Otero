@@ -223,6 +223,17 @@ await test('Pregúntale: un nombre devuelve su ficha la primera', () => {
   const r = search('corzo').results;
   assert(r[0]?.e?.id === 'corzo', r[0]?.e?.id);
 });
+await test('Pregúntale: «árbol a más de 2000 m, parecía un pino» → pino negro, destacado', () => {
+  const here = REGIONS.find(r => r.group === 'pirineo');
+  const r = search('He visto un arbol a mas de 2000 metros, parecia un pino, cual es?', { here }).results.filter(x => x.kind === 'entry');
+  assert(r[0]?.e?.sci === 'Pinus uncinata', r[0]?.e?.n);
+  assert(r[0].score >= r[1].score * 1.25, `poca diferencia: ${r[0].score} / ${r[1]?.score}`);
+  assert(r.every(x => x.e.g === 'arb' && x.e.alt[1] >= 2000), 'cuela algo que no es árbol o no llega a 2000 m');
+});
+await test('Pregúntale: «seta» no devuelve líquenes; «qué significa» va al diccionario', () => {
+  assert(search('seta comestible de pino').results.every(x => x.kind !== 'entry' || x.e.sub !== 'liquen'));
+  assert(search('qué significa ibón').results[0]?.kind === 'topo');
+});
 await test('Pregúntale: una pregunta sin nada que ver no devuelve basura', () => {
   assert(search('xyzzy qwerty').results.length === 0);
 });

@@ -17,6 +17,7 @@ export function openSheet(content, { tall = false } = {}) {
   s.classList.toggle('tall', tall);
   const body = $('.sheet-body', s);
   body.onclick = null;
+  delete body.dataset.dl; // el panel deja de ser el de una descarga en curso
   if (typeof content === 'string') body.innerHTML = content; else { body.innerHTML = ''; body.append(content); }
   body.scrollTop = 0;
   $('#mainactions').classList.add('hidden');
@@ -26,6 +27,7 @@ export function closeSheet() {
   sheet().classList.add('hidden');
   $('.sheet-body', sheet()).innerHTML = '';
   $('.sheet-body', sheet()).onclick = null;
+  delete $('.sheet-body', sheet()).dataset.dl;
   $('#mainactions').classList.remove('hidden');
   sheetCloseHandlers.forEach(f => f());
 }

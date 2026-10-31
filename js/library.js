@@ -159,7 +159,7 @@ export function openAsk(q = '') {
       if (!results.length) { out.innerHTML = html`<p class="muted">No encuentro nada que encaje. Prueba con otras palabras (color, forma, dónde lo viste) o busca en Especies por rasgos.</p>`; searchCuadernos(qq, out); return; }
       const groups = {};
       for (const r of results) (groups[r.kind] ||= []).push(r);
-      out.innerHTML = html`<p class="small muted">Entiendo: ${understood.join(' · ')}</p>` + (pq.intent === 'huella' ? '<div class="note small">Para saber de quién es una huella o un excremento, la <b>guía de Huellas</b> te pregunta forma y tamaño. <button class="btn small" id="gohu">Abrir la guía</button></div>' : '') + Object.entries(KIND_LABEL).filter(([k]) => groups[k]).map(([k, label]) => html`<p class="kicker" style="margin-top:14px">${label}</p><ul class="list">${raw(groups[k].slice(0, k === 'entry' ? 25 : 8).map(r => resultHTML(r)).join(''))}</ul>`).join('');
+      out.innerHTML = html`<p class="small muted">Entiendo: ${understood.join(' · ')}</p>` + (pq.intent === 'huella' ? '<div class="note small">Para saber de quién es una huella o un excremento, la <b>guía de Huellas</b> te pregunta forma y tamaño. <button class="btn small" id="gohu">Abrir la guía</button></div>' : '') + Object.entries(KIND_LABEL).filter(([k]) => groups[k]).map(([k, label]) => k === 'entry' ? entriesHTML(groups[k]) : html`<p class="kicker" style="margin-top:14px">${label}</p><ul class="list">${raw(groups[k].slice(0, 8).map(r => resultHTML(r)).join(''))}</ul>`).join('');
       wire(out);
       $$('[data-reg]', out).forEach(li => li.onclick = () => openRegion(li.dataset.reg));
       searchCuadernos(qq, out);
@@ -184,6 +184,16 @@ async function searchCuadernos(q, out) {
   hits.sort((a, b) => b.n - a.n);
   out.insertAdjacentHTML('beforeend', html`<p class="kicker" style="margin-top:14px">En tus cuadernos de salida</p><ul class="list">${raw(hits.slice(0, 10).map(x => x.h).join(''))}</ul>`);
   $$('[data-cz]', out).forEach(li => li.onclick = () => import('./cuaderno.js').then(m => m.openCuaderno(li.dataset.cz)));
+}
+// Fichas: si una encaja claramente mejor, se destaca como «Lo más probable» y el resto va aparte
+function entriesHTML(list) {
+  const [best, second] = list;
+  const clear = !second || best.score >= second.score * 1.25;
+  if (!clear) return html`<p class="kicker" style="margin-top:14px">Fichas que encajan</p><ul class="list">${raw(list.slice(0, 25).map(r => resultHTML(r)).join(''))}</ul>`;
+  const rest = list.slice(1);
+  return html`<p class="kicker" style="margin-top:14px">Lo más probable</p><ul class="list best">${raw(resultHTML(best))}</ul>
+    ${raw(rest.length ? html`<details class="card" ${raw(rest.length <= 4 ? 'open' : '')}><summary><b>Otras posibilidades</b> <span class="muted small">(${rest.length})</span></summary><ul class="list">${raw(rest.slice(0, 25).map(r => resultHTML(r)).join(''))}</ul></details>` : '')}
+    <p class="tiny muted">Es una orientación: compara con la ficha («Cómo reconocerlo» y «Con qué se confunde») antes de darlo por seguro.</p>`;
 }
 function resultHTML(r) {
   const e = r.e;
