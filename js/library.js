@@ -155,7 +155,7 @@ export function openAsk(q = '') {
       if (!qq) { out.innerHTML = html`<p class="kicker">Prueba con…</p><div class="chips">${raw(EXAMPLES.map(x => html`<button class="chip-b" data-ex="${x}">${x}</button>`).join(''))}</div>`; $$('[data-ex]', out).forEach(b => b.onclick = () => { $('#aq', body).value = b.dataset.ex; run(); }); return; }
       const here = regionAt(state.lastPoint?.lat ?? 0, state.lastPoint?.lon ?? 0);
       const { pq, results } = search(qq, { here });
-      const understood = [...pq.groups.map(g => GROUP_LABELS[g]), ...pq.notes, ...(pq.alt ? [`a unos ${pq.alt} m`] : []), ...pq.terms.map(t => t.syn && t.syn !== t.w ? `${t.w} → ${t.syn.replace(/-/g, ' ')}` : t.w)];
+      const understood = [...pq.groups.map(g => GROUP_LABELS[g]), ...pq.notes, ...(pq.alt ? [pq.altCmp === 'min' ? `por encima de ${pq.alt} m` : pq.altCmp === 'max' ? `por debajo de ${pq.alt} m` : `a unos ${pq.alt} m`] : []), ...pq.terms.map(t => t.syn && t.syn !== t.w ? `${t.w} → ${t.syn.replace(/-/g, ' ')}` : t.w)];
       if (!results.length) { out.innerHTML = html`<p class="muted">No encuentro nada que encaje. Prueba con otras palabras (color, forma, dónde lo viste) o busca en Especies por rasgos.</p>`; searchCuadernos(qq, out); return; }
       const groups = {};
       for (const r of results) (groups[r.kind] ||= []).push(r);
