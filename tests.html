@@ -20,6 +20,7 @@ import { distance, bearing } from './js/geo.js';
 import { locate, quality, fmtAcc, LocationError } from './js/location.js';
 import { getJSON, overpass, peaksAround, parseWikidataPeaks, parsePhoton, parseOpenMeteoGeo, SourceError, explainError, _setOsmBudget, parsePhotonAdmin, parseNominatimAdmin, parsePhotonPlaces } from './js/sources.js';
 import { analyseTerrain } from './js/climate.js';
+import { sunElevation, modelFromHourly, interpret, compareSession } from './js/measures.js';
 import { ENTRIES, ZONAS, search, parseQuery, stem } from './js/catalog.js';
 import { REGIONS } from './content/regions.js';
 import { articleById } from './content/articles.js';
@@ -243,6 +244,34 @@ await test('Explicaciones: todas las referencias de las sierras existen', () => 
   assert(!missing.length, missing.slice(0, 6).join(', '));
 });
 
+// ---- Mediciones: comparación con el modelo y entre sí ----
+await test('Mediciones: altura del sol (mediodía de verano alto, medianoche bajo el horizonte)', () => {
+  assert(sunElevation(40.4, -3.7, Date.UTC(2026, 5, 21, 12, 15)) > 65, 'mediodía');
+  assert(sunElevation(40.4, -3.7, Date.UTC(2026, 5, 21, 23, 0)) < -10, 'noche');
+});
+await test('Mediciones: el modelo se interpola a la hora exacta', () => {
+  const t0 = Date.UTC(2026, 9, 31, 3, 0) / 1000;
+  const m = modelFromHourly({ time: [t0, t0 + 3600], temperature_2m: [2, 4], cloud_cover: [0, 0], wind_speed_10m: [2, 2] }, (t0 + 1800) * 1000, 'x');
+  assert(m && m.temp === 3, JSON.stringify(m));
+  assert(modelFromHourly({ time: [t0], temperature_2m: [2] }, (t0 + 5 * 3600) * 1000, 'x') === null, 'fuera de rango');
+});
+await test('Mediciones: noche en calma en un fondo de valle 4 °C más fría → aire frío acumulado', () => {
+  const t = Date.UTC(2026, 0, 15, 5, 0);
+  const it = interpret({ lat: 42.4, lon: 0.6, t, temp: -3, terrain: 'Fondo de valle u hondonada', model: { temp: 1, wind: 3, cloud: 10 } });
+  assert(it.level === 'frio' && /acumulado/.test(it.title), it.title);
+  const day = interpret({ lat: 42.4, lon: 0.6, t: Date.UTC(2026, 6, 15, 12, 0), temp: 30, shade: false, terrain: 'Ladera media', model: { temp: 25, wind: 3, cloud: 10 } });
+  assert(day.level === 'calido' && /sol/.test(day.text), 'al sol');
+  assert(interpret({ lat: 42.4, lon: 0.6, t, temp: 1, model: { temp: 1.5 } }).level === 'ok');
+});
+await test('Mediciones: abajo más frío que arriba → inversión', () => {
+  const t = Date.UTC(2026, 0, 15, 6, 0);
+  const inv = compareSession([{ t, temp: -4, ele: 900 }, { t: t + 1800e3, temp: 1, ele: 1250 }]);
+  assert(inv.kind === 'inversion', inv.kind);
+  const normal = compareSession([{ t, temp: 6, ele: 900 }, { t, temp: 3.8, ele: 1250 }]);
+  assert(normal.kind === 'normal', normal.kind);
+  assert(compareSession([{ t, temp: 1, ele: 900 }]) === null);
+});
+
 // ---- Cobertura de capas ----
 await test('Países: España, Francia, Portugal y resto', () => {
   const cases = [[40.42, -3.70, 'sat'], [42.63, 0.65, 'sat'], [43.26, -2.93, 'sat'], [43.48, -8.23, 'sat'], [38.88, -6.97, 'sat'], [43.60, 1.44, 'satfr'], [45.76, 4.84, 'satfr'], [41.15, -8.61, 'otm'], [46.5, 11.35, 'otm'], [57.1, -3.67, 'otm']];
@@ -258,7 +287,7 @@ await test('Modo sin conexión: todos los archivos de la lista del service worke
   const bad = [];
   for (const f of list) { const r = await realFetch(f, { cache: 'no-store' }); if (!r.ok) bad.push(f + ' ' + r.status); }
   assert(!bad.length, bad.join(', '));
-  const js = ['app', 'state', 'geo', 'db', 'sources', 'layers', 'zones', 'ui', 'point', 'panels', 'compass', 'library', 'diary', 'identify', 'settings', 'climate', 'location', 'places', 'updates', 'catalog', 'cuaderno'];
+  const js = ['app', 'state', 'geo', 'db', 'sources', 'layers', 'zones', 'ui', 'point', 'panels', 'compass', 'library', 'diary', 'identify', 'settings', 'climate', 'location', 'places', 'updates', 'catalog', 'cuaderno', 'measures'];
   const missing = js.filter(n => !list.includes(`./js/${n}.js`));
   assert(!missing.length, 'faltan en la lista: ' + missing.join(', '));
   assert(/const VERSION = '\d{4}\.\d{2}\.\d{2}-\d+'/.test(sw), 'VERSION con formato fecha-número');

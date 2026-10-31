@@ -71,7 +71,7 @@ async function drawData() {
   }
   if (show.measures) for (const m of (await db.all('measures').catch(() => []))) {
     L.marker([m.lat, m.lon], { icon: icon('measure', `${Math.round(m.temp)}°`, [34, 22], `background:${tempColor(m.temp)}`) }).addTo(groups.measures)
-      .bindPopup(`<b>${fmtNum(m.temp, 1)} °C</b><br>${fmtDate(m.t)}${m.ele != null ? `<br>${fmtNum(m.ele)} m · ${esc(m.terrain || '')}` : ''}${m.notes ? `<br>${esc(m.notes)}` : ''}`);
+      .bindPopup(`<b>${fmtNum(m.temp, 1)} °C</b><br>${fmtDate(m.t)}${m.ele != null ? `<br>${fmtNum(m.ele)} m · ${esc(m.terrain || '')}` : ''}${m.model?.temp != null ? `<br>Previsión: ${fmtNum(m.model.temp, 1)} °C (${m.temp - m.model.temp >= 0 ? '+' : '−'}${fmtNum(Math.abs(m.temp - m.model.temp), 1)} °C)` : ''}${m.notes ? `<br>${esc(m.notes)}` : ''}`);
   }
   if (show.zones) for (const z of await getZones()) {
     L.rectangle([[z.bbox.s, z.bbox.w], [z.bbox.n, z.bbox.e]], { color: '#c47d2c', weight: 1.5, dashArray: '6 5', fill: false, interactive: false }).addTo(groups.zones);

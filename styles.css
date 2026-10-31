@@ -198,3 +198,4 @@ details.sub summary { cursor: pointer; font-weight: 600; }
 
 button, .tile, .chip-b, [data-sp], [data-art] { touch-action: manipulation; } /* respuesta inmediata al toque */
 .list.best li { background: #eef3ec; border-radius: 12px; padding: 10px; }
+.mchart { width: 100%; max-width: 360px; height: auto; display: block; margin: 6px 0 0; background: #fbfaf6; border-radius: 10px; }
