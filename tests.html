@@ -20,6 +20,9 @@ import { distance, bearing } from './js/geo.js';
 import { locate, quality, fmtAcc, LocationError } from './js/location.js';
 import { getJSON, overpass, peaksAround, parseWikidataPeaks, parsePhoton, parseOpenMeteoGeo, SourceError, explainError, _setOsmBudget, parsePhotonAdmin, parseNominatimAdmin, parsePhotonPlaces } from './js/sources.js';
 import { analyseTerrain } from './js/climate.js';
+import { ENTRIES, ZONAS, search, parseQuery, stem } from './js/catalog.js';
+import { REGIONS } from './content/regions.js';
+import { articleById } from './content/articles.js';
 import { inSpain, inFrance, baseFor, covers } from './js/layers.js';
 
 const out = document.getElementById('out');
@@ -199,6 +202,36 @@ await test('Relieve: fondo de valle estrecho no se confunde con ladera', () => {
   assert(/^Fondo/.test(a.cls), a.cls);
 });
 
+// ---- Biblioteca y «Pregúntale a Otero» ----
+await test('Biblioteca: ids únicos y campos básicos en todas las fichas', () => {
+  const seen = new Set(), bad = [];
+  for (const e of ENTRIES) {
+    if (seen.has(e.id)) bad.push('repetido ' + e.id); seen.add(e.id);
+    if (!e.n || !e.g || !Array.isArray(e.alt)) bad.push('incompleta ' + e.id);
+    for (const z of e.r || []) if (!ZONAS[z]) bad.push(`${e.id}: zona ${z}`);
+  }
+  assert(!bad.length, bad.slice(0, 5).join(', '));
+  assert(ENTRIES.length >= 60, 'pocas fichas: ' + ENTRIES.length);
+});
+await test('Pregúntale: entiende grupo, sinónimos, sierra y altitud', () => {
+  const pq = parseQuery('árbol de hoja rojiza junto al río a 1200 m');
+  assert(pq.groups.includes('arb') && pq.alt === 1200, JSON.stringify(pq));
+  assert(pq.terms.some(t => t.syn === 'rojo') && pq.terms.some(t => t.syn === 'ribera'), JSON.stringify(pq.terms));
+  assert(stem('rojizas') === stem('rojizo'), 'raíces');
+});
+await test('Pregúntale: un nombre devuelve su ficha la primera', () => {
+  const r = search('corzo').results;
+  assert(r[0]?.e?.id === 'corzo', r[0]?.e?.id);
+});
+await test('Pregúntale: una pregunta sin nada que ver no devuelve basura', () => {
+  assert(search('xyzzy qwerty').results.length === 0);
+});
+await test('Explicaciones: todas las referencias de las sierras existen', () => {
+  const missing = [];
+  for (const r of REGIONS) for (const a of r.articles || []) if (!articleById(a)) missing.push(`${r.id}→${a}`);
+  assert(!missing.length, missing.slice(0, 6).join(', '));
+});
+
 // ---- Cobertura de capas ----
 await test('Países: España, Francia, Portugal y resto', () => {
   const cases = [[40.42, -3.70, 'sat'], [42.63, 0.65, 'sat'], [43.26, -2.93, 'sat'], [43.48, -8.23, 'sat'], [38.88, -6.97, 'sat'], [43.60, 1.44, 'satfr'], [45.76, 4.84, 'satfr'], [41.15, -8.61, 'otm'], [46.5, 11.35, 'otm'], [57.1, -3.67, 'otm']];
@@ -214,7 +247,7 @@ await test('Modo sin conexión: todos los archivos de la lista del service worke
   const bad = [];
   for (const f of list) { const r = await realFetch(f, { cache: 'no-store' }); if (!r.ok) bad.push(f + ' ' + r.status); }
   assert(!bad.length, bad.join(', '));
-  const js = ['app', 'state', 'geo', 'db', 'sources', 'layers', 'zones', 'ui', 'point', 'panels', 'compass', 'library', 'diary', 'identify', 'settings', 'climate', 'location', 'places', 'updates'];
+  const js = ['app', 'state', 'geo', 'db', 'sources', 'layers', 'zones', 'ui', 'point', 'panels', 'compass', 'library', 'diary', 'identify', 'settings', 'climate', 'location', 'places', 'updates', 'catalog', 'cuaderno'];
   const missing = js.filter(n => !list.includes(`./js/${n}.js`));
   assert(!missing.length, 'faltan en la lista: ' + missing.join(', '));
   assert(/const VERSION = '\d{4}\.\d{2}\.\d{2}-\d+'/.test(sw), 'VERSION con formato fecha-número');

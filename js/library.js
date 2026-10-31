@@ -1,18 +1,25 @@
-// «Saber»: especies, explicaciones, guía de huellas y diccionario de nombres.
-import { SPECIES, GROUPS, TRACK_TYPES, SCAT_TYPES } from '../content/species.js';
+// «Saber»: especies, rocas, explicaciones, guía de huellas, diccionario de nombres y «Pregúntale a Otero».
+import { SPECIES, TRACK_TYPES, SCAT_TYPES } from '../content/species.js';
 import { ARTICLES, articleById } from '../content/articles.js';
 import { TOPONIMIA } from '../content/toponimia.js';
-import { REGIONS, regionAt } from '../content/regions.js';
+import { regionAt } from '../content/regions.js';
 import { openView, html, raw, esc, $, $$ } from './ui.js';
 import { state } from './state.js';
 import { INAT_GROUPS } from './sources.js';
 import { fmtNum } from './geo.js';
+import { ENTRIES, entryById, GROUP_LABELS, ZONAS, SUBS, TRAITS, HABITATS, search, matchTraits, norm } from './catalog.js';
 
+const MESES = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
+const TOX = { mortal: ['☠️ MORTAL', 'bad'], toxica: ['⚠️ Tóxica', 'bad'], 'comestible-precaucion': ['Comestible, con riesgo de confusión', 'warn'], 'no-comestible': ['No comestible', 'warn'] };
+
+// Lo más probable en una zona y altitud, ordenado por lo bien que encaja la altitud
 export function speciesFor(regionGroup, ele) {
-  return SPECIES.filter(s => (!regionGroup || s.r.includes(regionGroup)) && (ele == null || (ele >= s.alt[0] - 150 && ele <= s.alt[1] + 150)));
+  const fit = s => ele == null ? 0 : Math.abs(ele - (s.alt[0] + s.alt[1]) / 2) / Math.max(200, s.alt[1] - s.alt[0]);
+  return SPECIES.filter(s => (!regionGroup || (s.r || []).includes(regionGroup)) && (ele == null || (ele >= s.alt[0] - 150 && ele <= s.alt[1] + 150)))
+    .sort((a, b) => fit(a) - fit(b));
 }
 
-const spCard = s => html`<li data-sp="${s.id}"><span class="k">${s.em}</span><div class="grow"><b>${s.n}</b><div class="small sp-sci">${s.sci}</div></div><span class="muted">›</span></li>`;
+const spCard = s => html`<li data-sp="${s.id}"><span class="k">${s.em || '•'}</span><div class="grow"><b>${s.n}</b>${raw(s.tox === 'mortal' || s.tox === 'toxica' ? ` <span class="pill bad">${TOX[s.tox][0]}</span>` : '')}<div class="small sp-sci">${s.sci || SUBS[s.g]?.[s.sub] || ''}</div></div><span class="muted">›</span></li>`;
 
 export function openLibrary(tab) {
   openView('Saber', (body) => renderLibrary(body, tab || state.libTab || 'aqui'), { root: true });
@@ -20,11 +27,13 @@ export function openLibrary(tab) {
 
 function renderLibrary(body, tab) {
   state.libTab = tab;
-  const tabs = [['aqui', 'Aquí'], ['especies', 'Especies'], ['explica', 'Explicaciones'], ['huellas', 'Huellas'], ['nombres', 'Nombres']];
-  body.innerHTML = html`<div class="seg">${raw(tabs.map(([k, n]) => `<button data-t="${k}" class="${k === tab ? 'on' : ''}">${n}</button>`).join(''))}</div><div id="libc"></div>`;
+  const tabs = [['aqui', 'Aquí'], ['especies', 'Especies'], ['rocas', 'Rocas'], ['explica', 'Explicaciones'], ['huellas', 'Huellas'], ['nombres', 'Nombres']];
+  body.innerHTML = html`<form id="askf" class="ask" autocomplete="off"><input type="search" id="askq" placeholder="Pregúntale a Otero: «árbol de hoja rojiza junto al río»" enterkeyhint="search"><button class="btn small">Buscar</button></form>
+    <div class="seg scroll">${raw(tabs.map(([k, n]) => `<button data-t="${k}" class="${k === tab ? 'on' : ''}">${n}</button>`).join(''))}</div><div id="libc"></div>`;
   $$('.seg button', body).forEach(b => b.onclick = () => renderLibrary(body, b.dataset.t));
+  $('#askf', body).onsubmit = e => { e.preventDefault(); const q = $('#askq', body).value.trim(); if (q) openAsk(q); };
   const c = $('#libc', body);
-  ({ aqui: renderHere, especies: renderSpecies, explica: renderArticles, huellas: renderTrackKey, nombres: renderToponimia })[tab](c);
+  ({ aqui: renderHere, especies: c => renderCatalog(c, 'bio'), rocas: c => renderCatalog(c, 'roc'), explica: renderArticles, huellas: renderTrackKey, nombres: renderToponimia })[tab](c);
 }
 
 // ---------- Aquí ----------
@@ -37,17 +46,18 @@ function renderHere(c) {
   }
   const reg = regionAt(p.lat, p.lon);
   const list = speciesFor(reg?.group, p.ele);
-  const byG = Object.entries(GROUPS).map(([g, n]) => [n, list.filter(s => s.g === g)]).filter(([, l]) => l.length);
+  const byG = Object.entries(GROUP_LABELS).map(([g, n]) => [g, n, list.filter(s => s.g === g)]).filter(([, , l]) => l.length);
   c.innerHTML = html`
     <p class="kicker">Último punto consultado</p>
-    <h2 class="title" style="margin-top:0">${reg ? reg.name : 'Fuera de las regiones de la biblioteca'}</h2>
-    <p class="sub">${p.label || ''}${p.ele != null ? ` · ${fmtNum(p.ele)} m` : ''}</p>
-    ${raw(reg ? html`<div class="card"><p style="margin:0 0 8px;line-height:1.5">${reg.summary}</p><p class="small" style="margin:0 0 6px"><b>Clima.</b> ${reg.climate}</p><p class="small" style="margin:0"><b>Vegetación.</b> ${reg.veg}</p></div>
-      <p class="kicker">Para entender este paisaje</p><ul class="list">${raw(reg.articles.map(id => articleById(id)).map(a => html`<li data-art="${a.id}"><span class="k">${a.em}</span><b class="grow">${a.title}</b><span class="muted">›</span></li>`).join(''))}</ul>` : '<div class="note">La biblioteca cubre por ahora Gúdar, Javalambre, Maestrazgo, Albarracín, el resto del Sistema Ibérico y el Pirineo. Te muestro todas las especies.</div>')}
-    <p class="kicker" style="margin-top:16px">Lo más probable a esta altitud</p>
-    ${raw(byG.map(([n, l]) => html`<h3 style="margin:12px 0 2px;font-size:17px">${n}</h3><ul class="list">${raw(l.map(spCard).join(''))}</ul>`).join(''))}
+    <h2 class="title" style="margin-top:0">${reg ? reg.name : 'Fuera de las sierras de la biblioteca'}</h2>
+    <p class="sub">${p.label || ''}${p.ele != null ? ` · ${fmtNum(p.ele)} m` : ''}${reg ? ` · ${ZONAS[reg.group] || ''}` : ''}</p>
+    ${raw(reg ? html`<div class="card"><p style="margin:0 0 8px;line-height:1.5">${reg.summary}</p>${raw(reg.climate ? html`<p class="small" style="margin:0 0 6px"><b>Clima.</b> ${reg.climate}</p>` : '')}${raw(reg.veg ? html`<p class="small" style="margin:0 0 6px"><b>Vegetación.</b> ${reg.veg}</p>` : '')}${raw(reg.fauna ? html`<p class="small" style="margin:0"><b>Fauna.</b> ${reg.fauna}</p>` : '')}${raw(reg.peaks?.length ? html`<p class="small" style="margin:6px 0 0"><b>Cumbres.</b> ${reg.peaks.join(' · ')}</p>` : '')}</div>
+      <p class="kicker">Para entender este paisaje</p><ul class="list">${raw((reg.articles || []).map(articleById).filter(Boolean).map(a => html`<li data-art="${a.id}"><span class="k">${a.em}</span><b class="grow">${a.title}</b><span class="muted">›</span></li>`).join(''))}</ul>` : '')}
+    <p class="kicker" style="margin-top:16px">Lo más probable aquí${p.ele != null ? ' a esta altitud' : ''}</p>
+    ${raw(byG.map(([g, n, l]) => html`<details class="card" ${raw(g === 'arb' || g === 'mam' || g === 'ave' ? 'open' : '')}><summary><b>${n}</b> <span class="muted small">(${l.length})</span></summary><ul class="list">${raw(l.slice(0, 15).map(spCard).join(''))}</ul>${raw(l.length > 15 ? html`<button class="btn small sec block" data-more="${g}">Ver las ${l.length}</button>` : '')}</details>`).join(''))}
     <div id="inat-here"></div>`;
   wire(c);
+  $$('[data-more]', c).forEach(b => b.onclick = () => openView(GROUP_LABELS[b.dataset.more], body => { body.innerHTML = html`<ul class="list">${raw(list.filter(s => s.g === b.dataset.more).map(spCard).join(''))}</ul>`; wire(body); }));
   const z = state.lastZone;
   if (z?.inat) {
     const box = $('#inat-here', c);
@@ -59,42 +69,145 @@ export function inatHTML(inat, max = 8) {
   return Object.entries(INAT_GROUPS).filter(([g]) => inat[g]?.length).map(([g, n]) => html`<details class="card"><summary><b>${n}</b> <span class="muted small">(${inat[g].length})</span></summary><ul class="list">${raw(inat[g].slice(0, 25).map(t => html`<li><div class="grow"><b>${t.common || t.sci}</b><div class="small sp-sci">${t.sci}</div></div><span class="tiny muted">${t.count} obs.</span></li>`).join(''))}</ul></details>`).join('');
 }
 
-// ---------- Especies ----------
-function renderSpecies(c) {
-  c.innerHTML = html`<input type="search" id="spq" placeholder="Buscar (nombre o latín)"><div class="seg" id="spr"><button data-r="" class="on">Todas</button><button data-r="iberico">Teruel / Ibérico</button><button data-r="pirineo">Pirineo</button></div><div id="spl"></div>`;
-  let r = '';
+// ---------- Catálogo (Especies / Rocas) con filtros por zona, grupo, subgrupo y rasgos ----------
+const catState = { bio: { g: '', zona: null, sub: '', sel: {}, q: '' }, roc: { g: 'roc', zona: '', sub: '', sel: {}, q: '' } };
+function renderCatalog(c, kind) {
+  const st = catState[kind];
+  if (st.zona == null) st.zona = regionAt(state.lastPoint?.lat ?? 0, state.lastPoint?.lon ?? 0)?.group || '';
+  const pool = ENTRIES.filter(e => kind === 'roc' ? e.g === 'roc' : e.g !== 'roc');
+  const groups = kind === 'roc' ? [] : Object.keys(GROUP_LABELS).filter(g => g !== 'roc' && pool.some(e => e.g === g));
   const draw = () => {
-    const q = $('#spq', c).value.trim().toLowerCase();
-    const l = SPECIES.filter(s => (!r || s.r.includes(r)) && (!q || (s.n + ' ' + s.sci).toLowerCase().includes(q)));
-    $('#spl', c).innerHTML = Object.entries(GROUPS).map(([g, n]) => {
-      const gl = l.filter(s => s.g === g);
-      return gl.length ? html`<h3 style="margin:14px 0 2px;font-size:17px">${n}</h3><ul class="list">${raw(gl.map(spCard).join(''))}</ul>` : '';
-    }).join('') || '<p class="muted">Nada con ese nombre.</p>';
-    wire($('#spl', c));
+    const g = kind === 'roc' ? 'roc' : st.g;
+    const traits = g ? TRAITS[g] || {} : {};
+    const nSel = Object.values(st.sel).reduce((a, s) => a + s.size, 0);
+    c.innerHTML = html`<input type="search" id="cq" placeholder="Filtrar por nombre" value="${st.q}">
+      ${raw(groups.length ? html`<div class="chips">${raw(['', ...groups].map(k => html`<button class="chip-b ${k === st.g ? 'on' : ''}" data-g="${k}">${k ? GROUP_LABELS[k] : 'Todo'}</button>`).join(''))}</div>` : '')}
+      <div class="row" style="gap:8px;margin:6px 0"><select id="cz" class="grow"><option value="">Todas las zonas de España</option>${raw(Object.entries(ZONAS).map(([k, n]) => html`<option value="${k}" ${k === st.zona ? 'selected' : ''}>${n}</option>`).join(''))}</select>
+      ${raw(g && SUBS[g] ? html`<select id="cs" class="grow"><option value="">Todos los tipos</option>${raw(Object.entries(SUBS[g]).map(([k, n]) => html`<option value="${k}" ${k === st.sub ? 'selected' : ''}>${n}</option>`).join(''))}</select>` : '')}</div>
+      <details class="card traits" ${raw(nSel ? 'open' : '')}><summary><b>Buscar por rasgos</b> ${raw(nSel ? `<span class="pill">${nSel}</span>` : '')} <span class="muted small">${g ? '' : '(elige antes un grupo para ver más rasgos)'}</span></summary>
+        ${raw([...Object.entries(traits), ['hab', { label: 'Hábitat', opts: HABITATS }]].map(([k, def]) => html`<p class="kicker" style="margin:10px 0 4px">${def.label}</p><div class="chips">${raw(Object.entries(def.opts).map(([v, n]) => html`<button class="chip-b ${st.sel[k]?.has(v) ? 'on' : ''}" data-k="${k}" data-v="${v}">${n}</button>`).join(''))}</div>`).join(''))}
+        ${raw(nSel ? '<button class="btn small sec" id="clr" style="margin-top:10px">Quitar rasgos</button>' : '')}</details>
+      <p class="small muted" id="cn"></p><ul class="list" id="cl"></ul>`;
+    $('#cq', c).oninput = e => { st.q = e.target.value; list(); };
+    $$('[data-g]', c).forEach(b => b.onclick = () => { st.g = b.dataset.g; st.sub = ''; st.sel = {}; draw(); });
+    $('#cz', c).onchange = e => { st.zona = e.target.value; list(); };
+    const cs = $('#cs', c); if (cs) cs.onchange = e => { st.sub = e.target.value; list(); };
+    $$('[data-k]', c).forEach(b => b.onclick = () => { const s = (st.sel[b.dataset.k] ||= new Set()); s.has(b.dataset.v) ? s.delete(b.dataset.v) : s.add(b.dataset.v); b.classList.toggle('on'); list(); });
+    const clr = $('#clr', c); if (clr) clr.onclick = () => { st.sel = {}; draw(); };
+    list();
   };
-  $('#spq', c).oninput = draw;
-  $$('#spr button', c).forEach(b => b.onclick = () => { r = b.dataset.r; $$('#spr button', c).forEach(x => x.classList.toggle('on', x === b)); draw(); });
+  const list = () => {
+    const g = kind === 'roc' ? 'roc' : st.g, q = norm(st.q).trim();
+    let l = pool.filter(e => (!g || e.g === g) && (!st.zona || (e.r || []).includes(st.zona)) && (!st.sub || e.sub === st.sub) && (!q || norm(e.n + ' ' + (e.sci || '') + ' ' + (e.alt_n || []).join(' ')).includes(q)));
+    const scored = l.map(e => ({ e, m: matchTraits(e, st.sel) }));
+    const total = scored[0]?.m.total || 0;
+    let exact = total ? scored.filter(x => x.m.ok === total) : scored;
+    let near = total ? scored.filter(x => x.m.ok === total - 1 && total > 1) : [];
+    const ul = $('#cl', c);
+    // número de rasgos elegidos, visible aunque el panel esté cerrado
+    const nSel = Object.values(st.sel).reduce((a, s) => a + s.size, 0), sm = $('.card.traits summary', c);
+    sm.querySelector('.pill')?.remove(); if (nSel) sm.querySelector('b').insertAdjacentHTML('afterend', ` <span class="pill">${nSel}</span>`);
+    $('#cn', c).textContent = total ? `${exact.length} encajan con todos los rasgos elegidos${near.length ? ` · ${near.length} con casi todos` : ''}` : `${l.length} fichas`;
+    const byGroup = arr => Object.keys(GROUP_LABELS).map(gg => [gg, arr.filter(x => x.e.g === gg)]).filter(([, a]) => a.length)
+      .map(([gg, a]) => html`${raw(!g ? html`<li class="kicker" style="display:block;margin-top:10px">${GROUP_LABELS[gg]}</li>` : '')}${raw(a.map(x => spCard(x.e)).join(''))}`).join('');
+    ul.innerHTML = (byGroup(exact) || '<li class="muted">Ninguna ficha encaja con todo. Quita algún rasgo o elige «Todas las zonas».</li>') +
+      (near.length ? html`<li class="kicker" style="display:block;margin-top:14px">Casi (falla un rasgo)</li>${raw(near.slice(0, 20).map(x => spCard(x.e)).join(''))}` : '');
+    wire(ul);
+  };
   draw();
 }
 
+// ---------- Ficha ----------
 export function openSpecies(id) {
-  const s = SPECIES.find(x => x.id === id);
+  const s = entryById(id);
   if (!s) return;
   openView(s.n, body => {
     const sec = (t, v) => v ? html`<div class="sp-sec"><h4>${t}</h4><p>${v}</p></div>` : '';
+    const tdefs = { ...(TRAITS[s.g] || {}), hab: { label: 'Hábitat', opts: HABITATS } };
+    const traitRows = Object.entries(s.t || {}).map(([k, vals]) => tdefs[k] ? html`<dt>${tdefs[k].label}</dt><dd>${[].concat(vals).map(v => tdefs[k].opts[v] || v).join(', ')}</dd>` : '').join('');
+    const tox = s.tox ? TOX[s.tox] : null;
     body.innerHTML = html`<div class="article" style="font-size:16px">
-      <div class="sp-head"><div class="sp-em">${s.em}</div><div><h2 style="margin:0;font-size:24px">${s.n}</h2><div class="sp-sci">${s.sci}</div><div>${raw(s.r.map(r => `<span class="pill">${r === 'iberico' ? 'Teruel / Ibérico' : 'Pirineo'}</span>`).join(''))}<span class="pill">${fmtNum(s.alt[0])}–${fmtNum(s.alt[1])} m</span></div></div></div>
-      ${raw(sec('Cómo reconocerlo', s.idf))}${raw(sec('Dónde vive', s.hab))}${raw(sec('Comportamiento', s.beh))}
+      ${raw(tox ? html`<div class="note ${tox[1] === 'bad' ? 'danger' : 'warn'}"><b>${tox[0]}.</b> ${s.g === 'hon' ? 'Nunca comas una seta identificada solo con una app o una foto: consulta a un micólogo o a una sociedad micológica.' : 'Precaución.'}</div>` : (s.g === 'hon' ? '<div class="note warn small">Nunca comas una seta identificada solo con una app o una foto.</div>' : ''))}
+      <div class="sp-head"><div class="sp-em">${s.em || '•'}</div><div><h2 style="margin:0;font-size:24px">${s.n}</h2>${raw(s.sci ? html`<div class="sp-sci">${s.sci}</div>` : '')}${raw(s.alt_n?.length ? html`<div class="small muted">${s.alt_n.join(' · ')}</div>` : '')}
+        <div class="small" style="margin-top:4px">${GROUP_LABELS[s.g]}${s.sub && SUBS[s.g]?.[s.sub] ? ' · ' + SUBS[s.g][s.sub] : ''}</div></div></div>
+      <div class="chips" style="margin:6px 0">${raw((s.r || []).map(z => html`<span class="pill">${(ZONAS[z] || z).split(' (')[0]}</span>`).join(''))}${raw(s.alt ? html`<span class="pill">${fmtNum(s.alt[0])}–${fmtNum(s.alt[1])} m</span>` : '')}${raw(s.mes?.length ? html`<span class="pill">${s.mes.map(m => MESES[m - 1]).join(' ')}</span>` : '')}</div>
+      ${raw(s.prot ? html`<div class="note small"><b>Protección.</b> ${s.prot}</div>` : '')}
+      ${raw(sec('Cómo reconocerlo', s.idf))}${raw(sec('Con qué se confunde', s.sim))}${raw(sec('Dónde vive', s.hab))}${raw(sec('Comportamiento', s.beh))}
       ${raw(s.cur ? html`<div class="box"><b>Curiosidad</b>${s.cur}</div>` : '')}
       ${raw(s.trk ? sec('Huella', s.trk.desc) : '')}${raw(s.scat ? sec('Excremento', s.scat.desc) : '')}
       ${raw(s.tec ? html`<div class="box tech"><b>Datos</b>${s.tec}</div>` : '')}
-      <p class="tiny muted">Más fotos: <a href="https://www.inaturalist.org/taxa/search?q=${encodeURIComponent(s.sci.split(/[ /,]/).slice(0, 2).join(' '))}&locale=es">iNaturalist</a> · <a href="https://es.wikipedia.org/wiki/Special:Search?search=${encodeURIComponent(s.sci.split(/[/,]/)[0].trim())}">Wikipedia</a> (con cobertura).</p></div>`;
+      ${raw(traitRows ? html`<details class="card"><summary><b>Rasgos</b></summary><dl class="kv">${raw(traitRows)}</dl></details>` : '')}
+      ${raw(s.g !== 'roc' && s.sci ? html`<p class="tiny muted">Más fotos: <a href="https://www.inaturalist.org/taxa/search?q=${encodeURIComponent(s.sci.split(/[ /,]/).slice(0, 2).join(' '))}&locale=es" target="_blank" rel="noopener">iNaturalist</a> · <a href="https://es.wikipedia.org/wiki/Special:Search?search=${encodeURIComponent(s.sci)}" target="_blank" rel="noopener">Wikipedia</a>. Textos de Otero: divulgativos; contrasta con una guía de campo.</p>` : '<p class="tiny muted">Textos de Otero: divulgativos; contrasta con una guía.</p>')}</div>`;
+  });
+}
+
+// ---------- Pregúntale a Otero ----------
+const KIND_LABEL = { entry: 'Fichas', article: 'Explicaciones', topo: 'Nombres de lugares', region: 'Sierras' };
+const EXAMPLES = ['árbol de hoja rojiza en otoño junto al río', 'serpiente con pupila vertical', 'seta blanca mortal', 'por qué hace más frío al subir', 'qué significa paco', 'pájaro que trepa por las rocas', 'roca que hace burbujas con vinagre', 'flor azul de alta montaña en Sierra Nevada'];
+export function openAsk(q = '') {
+  openView('Pregúntale a Otero', body => {
+    body.innerHTML = html`<form id="af" class="ask" autocomplete="off"><input type="search" id="aq" value="${q}" placeholder="Escribe como hablas…" enterkeyhint="search"><button class="btn small">Buscar</button></form>
+      <p class="tiny muted" style="margin:4px 0 10px">Busca en todo lo que Otero lleva dentro (fichas, explicaciones, nombres de lugares y sierras) y funciona sin conexión. No inventa: te enseña lo que encaja y por qué.</p>
+      <div id="ar"></div>`;
+    const run = () => {
+      const qq = $('#aq', body).value.trim();
+      const out = $('#ar', body);
+      if (!qq) { out.innerHTML = html`<p class="kicker">Prueba con…</p><div class="chips">${raw(EXAMPLES.map(x => html`<button class="chip-b" data-ex="${x}">${x}</button>`).join(''))}</div>`; $$('[data-ex]', out).forEach(b => b.onclick = () => { $('#aq', body).value = b.dataset.ex; run(); }); return; }
+      const here = regionAt(state.lastPoint?.lat ?? 0, state.lastPoint?.lon ?? 0);
+      const { pq, results } = search(qq, { here });
+      const understood = [...pq.groups.map(g => GROUP_LABELS[g]), ...pq.notes, ...(pq.alt ? [`a unos ${pq.alt} m`] : []), ...pq.terms.map(t => t.syn && t.syn !== t.w ? `${t.w} → ${t.syn.replace(/-/g, ' ')}` : t.w)];
+      if (!results.length) { out.innerHTML = html`<p class="muted">No encuentro nada que encaje. Prueba con otras palabras (color, forma, dónde lo viste) o busca en Especies por rasgos.</p>`; searchCuadernos(qq, out); return; }
+      const groups = {};
+      for (const r of results) (groups[r.kind] ||= []).push(r);
+      out.innerHTML = html`<p class="small muted">Entiendo: ${understood.join(' · ')}</p>` + (pq.intent === 'huella' ? '<div class="note small">Para saber de quién es una huella o un excremento, la <b>guía de Huellas</b> te pregunta forma y tamaño. <button class="btn small" id="gohu">Abrir la guía</button></div>' : '') + Object.entries(KIND_LABEL).filter(([k]) => groups[k]).map(([k, label]) => html`<p class="kicker" style="margin-top:14px">${label}</p><ul class="list">${raw(groups[k].slice(0, k === 'entry' ? 25 : 8).map(r => resultHTML(r)).join(''))}</ul>`).join('');
+      wire(out);
+      $$('[data-reg]', out).forEach(li => li.onclick = () => openRegion(li.dataset.reg));
+      searchCuadernos(qq, out);
+      const gh = $('#gohu', out); if (gh) gh.onclick = () => openLibrary('huellas');
+    };
+    $('#af', body).onsubmit = e => { e.preventDefault(); $('#aq', body).blur(); run(); };
+    run();
+  });
+}
+// También busca en los cuadernos de las zonas preparadas (Wikipedia y rutas guardadas)
+async function searchCuadernos(q, out) {
+  const words = norm(q).split(/\s+/).filter(w => w.length > 3);
+  if (!words.length) return;
+  const { getZones } = await import('./zones.js');
+  const hits = [];
+  for (const z of await getZones()) {
+    const cu = z.cuaderno; if (!cu) continue;
+    for (const w of cu.wiki || []) { const t = norm(w.title + ' ' + w.extract); const n = words.filter(x => t.includes(x)).length; if (n >= Math.ceil(words.length * 0.6)) hits.push({ n, h: html`<li data-cz="${z.id}"><span class="k">📖</span><div class="grow"><b>${w.title}</b><div class="tiny muted">Cuaderno «${z.name}»</div></div><span class="muted">›</span></li>` }); }
+    for (const r of cu.routes || []) { const t = norm([r.ref, r.name, ...(r.via || [])].join(' ')); const n = words.filter(x => t.includes(x)).length; if (n >= Math.ceil(words.length * 0.6)) hits.push({ n, h: html`<li data-cz="${z.id}"><span class="k">🥾</span><div class="grow"><b>${r.ref} ${r.name}</b><div class="tiny muted">Cuaderno «${z.name}»</div></div><span class="muted">›</span></li>` }); }
+  }
+  if (!hits.length || !document.body.contains(out)) return;
+  hits.sort((a, b) => b.n - a.n);
+  out.insertAdjacentHTML('beforeend', html`<p class="kicker" style="margin-top:14px">En tus cuadernos de salida</p><ul class="list">${raw(hits.slice(0, 10).map(x => x.h).join(''))}</ul>`);
+  $$('[data-cz]', out).forEach(li => li.onclick = () => import('./cuaderno.js').then(m => m.openCuaderno(li.dataset.cz)));
+}
+function resultHTML(r) {
+  const e = r.e;
+  if (r.kind === 'entry') return html`<li data-sp="${e.id}"><span class="k">${e.em || '•'}</span><div class="grow"><b>${e.n}</b> <span class="tiny muted">${GROUP_LABELS[e.g]}</span>${raw(e.tox === 'mortal' ? ' <span class="pill bad">☠️</span>' : '')}<div class="small sp-sci">${e.sci || ''}</div>${raw(r.why.length ? html`<div class="tiny" style="color:var(--moss)">encaja: ${r.why.map(w => w.replace(/[-_]/g, ' ')).join(', ')}</div>` : '')}</div><span class="muted">›</span></li>`;
+  if (r.kind === 'article') return html`<li data-art="${e.id}"><span class="k">${e.em}</span><div class="grow"><b>${e.title}</b><div class="small muted">${String(e.lead || '').slice(0, 140)}…</div></div><span class="muted">›</span></li>`;
+  if (r.kind === 'topo') return html`<li style="display:block"><b>${e.t}</b>${raw(e.l ? html` <span class="tiny muted">${e.l}</span>` : '')}<div class="small" style="line-height:1.45">${e.d}</div></li>`;
+  return html`<li data-reg="${e.id}"><span class="k">⛰️</span><div class="grow"><b>${e.name}</b><div class="small muted">${String(e.summary || '').slice(0, 140)}…</div></div><span class="muted">›</span></li>`;
+}
+function openRegion(id) {
+  import('../content/regions.js').then(({ REGIONS }) => {
+    const r = REGIONS.find(x => x.id === id); if (!r) return;
+    openView(r.name, body => {
+      body.innerHTML = html`<div class="article"><p class="kicker">${ZONAS[r.group] || ''}</p><h2>${r.name}</h2><p>${r.summary}</p>${raw(r.climate ? html`<h3>Clima</h3><p>${r.climate}</p>` : '')}${raw(r.veg ? html`<h3>Vegetación</h3><p>${r.veg}</p>` : '')}${raw(r.fauna ? html`<h3>Fauna</h3><p>${r.fauna}</p>` : '')}${raw(r.peaks?.length ? html`<h3>Cumbres</h3><p>${r.peaks.join(' · ')}</p>` : '')}
+        <ul class="list">${raw((r.articles || []).map(articleById).filter(Boolean).map(a => html`<li data-art="${a.id}"><span class="k">${a.em}</span><b class="grow">${a.title}</b><span class="muted">›</span></li>`).join(''))}</ul></div>`;
+      wire(body);
+    });
   });
 }
 
 // ---------- Explicaciones ----------
 function renderArticles(c, append = false) {
-  const h = html`<p class="kicker" style="margin-top:${append ? 18 : 4}px">Explicaciones del paisaje</p><div class="grid2">${raw(ARTICLES.map(a => html`<button class="tile" data-art="${a.id}"><span class="em">${a.em}</span><span>${a.kicker}</span><b>${a.title}</b></button>`).join(''))}</div>`;
+  // agrupadas por tema (Relieve, Clima, Meteorología…)
+  const kickers = [...new Set(ARTICLES.map(a => a.kicker))];
+  const h = html`<p class="kicker" style="margin-top:${append ? 18 : 4}px">Explicaciones (${ARTICLES.length})</p>` + kickers.map(k => html`<h3 style="margin:14px 0 6px;font-size:17px">${k}</h3><div class="grid2">${raw(ARTICLES.filter(a => a.kicker === k).map(a => html`<button class="tile" data-art="${a.id}"><span class="em">${a.em}</span><b>${a.title}</b></button>`).join(''))}</div>`).join('');
   if (append) c.insertAdjacentHTML('beforeend', h); else c.innerHTML = h;
   wire(c);
 }
@@ -103,7 +216,7 @@ export function openArticle(id) {
   const a = articleById(id);
   if (!a) return;
   openView(a.kicker, body => {
-    body.innerHTML = html`<article class="article"><p class="kicker">${a.kicker}</p><h2>${a.title}</h2><p class="lead">${a.lead}</p>${raw(a.body)}</article>`;
+    body.innerHTML = html`<article class="article"><p class="kicker">${a.kicker}</p><h2>${a.title}</h2><p class="lead">${a.lead}</p>${raw(a.body)}${raw(a.refs?.length ? html`<p class="tiny muted" style="margin-top:18px">Para saber más: ${a.refs.join(' · ')}</p>` : '')}</article>`;
     $$('[data-int]', body).forEach(el => INTERACTIVE[el.dataset.int]?.(el));
     wire(body);
   });
@@ -130,7 +243,7 @@ function renderTrackKey(c) {
     const sel = isT ? st.type : st.shape;
     c.innerHTML = html`
       <div class="seg"><button data-m="trk" class="${isT ? 'on' : ''}">🐾 Huella</button><button data-m="scat" class="${!isT ? 'on' : ''}">💩 Excremento</button></div>
-      <div class="seg" id="kr"><button data-r="" class="${!st.reg ? 'on' : ''}">Todas las zonas</button><button data-r="iberico" class="${st.reg === 'iberico' ? 'on' : ''}">Teruel</button><button data-r="pirineo" class="${st.reg === 'pirineo' ? 'on' : ''}">Pirineo</button></div>
+      <select id="kr" style="margin:6px 0"><option value="">Todas las zonas de España</option>${raw(Object.entries(ZONAS).map(([k, n]) => html`<option value="${k}" ${k === st.reg ? 'selected' : ''}>${n}</option>`).join(''))}</select>
       <p class="kicker">1 · ¿Qué forma tiene?</p>
       <div class="grid2">${raw(Object.entries(types).map(([k, t]) => html`<button class="tile ${k === sel ? 'on' : ''}" data-k="${k}" style="${k === sel ? 'border-color:var(--forest);background:#eef3ec' : ''}">${raw(isT ? `<span style="width:34px;height:34px">${TRACK_SVG[k]}</span>` : '')}<b>${t.n}</b><span>${t.d}</span></button>`).join(''))}</div>
       <p class="kicker" style="margin-top:14px">2 · ¿Qué tamaño? ${isT ? '(largo de una huella)' : '(grosor o diámetro)'}</p>
@@ -140,7 +253,7 @@ function renderTrackKey(c) {
       <p class="kicker" style="margin-top:16px">Candidatos</p><ul class="list" id="kres"></ul>
       <p class="tiny muted">La guía ordena por coincidencia. Úsala como pista: confirma siempre con la ficha y, si puedes, con varias huellas seguidas (el rastro dice más que una sola huella).</p>`;
     $$('.seg [data-m]', c).forEach(b => b.onclick = () => { st.mode = b.dataset.m; st.size = null; draw(); });
-    $$('#kr button', c).forEach(b => b.onclick = () => { st.reg = b.dataset.r; draw(); });
+    $('#kr', c).onchange = e => { st.reg = e.target.value; results(); };
     $$('[data-k]', c).forEach(b => b.onclick = () => { if (isT) st.type = st.type === b.dataset.k ? null : b.dataset.k; else st.shape = st.shape === b.dataset.k ? null : b.dataset.k; draw(); });
     const ks = $('#ks', c);
     ks.oninput = () => { st.size = parseFloat(ks.value); $('#ksv', c).textContent = fmtNum(st.size, 1) + ' cm'; results(); };
@@ -149,7 +262,7 @@ function renderTrackKey(c) {
   };
   const results = () => {
     const isT = st.mode === 'trk';
-    const scored = SPECIES.filter(s => (isT ? s.trk : s.scat) && (!st.reg || s.r.includes(st.reg))).map(s => {
+    const scored = SPECIES.filter(s => (isT ? s.trk : s.scat) && (!st.reg || (s.r || []).includes(st.reg))).map(s => {
       const d = isT ? s.trk : s.scat;
       let sc = 0;
       const t = isT ? st.type : st.shape;
@@ -158,7 +271,7 @@ function renderTrackKey(c) {
       if (st.size != null && rng) { const [a, b] = rng; sc += st.size >= a * 0.85 && st.size <= b * 1.15 ? 2 : st.size >= a * 0.6 && st.size <= b * 1.5 ? 0 : -2; }
       if (isT && st.claws != null && d.claws != null) sc += d.claws === st.claws ? 1 : -1;
       return { s, sc, d };
-    }).filter(x => x.sc >= 0).sort((a, b) => b.sc - a.sc).slice(0, 8);
+    }).filter(x => x.sc >= 0).sort((a, b) => b.sc - a.sc).slice(0, 12);
     const ul = $('#kres', c);
     ul.innerHTML = scored.length ? scored.map(({ s, d, sc }) => html`<li data-sp="${s.id}"><span class="k">${s.em}</span><div class="grow"><b>${s.n}</b> ${raw(sc >= 5 ? '<span class="pill ok">encaja</span>' : '')}<div class="small muted">${d.desc}</div></div></li>`).join('') : '<li class="muted">Ninguna especie de la biblioteca encaja. Prueba con otro tamaño o pregunta a Claude con una foto.</li>';
     wire(ul);
@@ -181,7 +294,7 @@ const INTERACTIVE = {
     const inp = el.querySelector('input'), ul = el.querySelector('ul');
     const draw = () => {
       const q = inp.value.trim().toLowerCase();
-      ul.innerHTML = TOPONIMIA.filter(t => !q || (t.t + ' ' + t.d).toLowerCase().includes(q)).map(t => html`<li style="display:block"><b>${t.t}</b><div style="font-size:15px;line-height:1.45">${t.d}</div>${raw(t.tip ? html`<div class="small" style="color:var(--moss);margin-top:2px">→ ${t.tip}</div>` : '')}</li>`).join('');
+      ul.innerHTML = TOPONIMIA.filter(t => !q || norm(t.t + ' ' + t.d + ' ' + (t.l || '')).includes(norm(q))).map(t => html`<li style="display:block"><b>${t.t}</b>${raw(t.l ? html` <span class="tiny muted">${t.l}</span>` : '')}<div style="font-size:15px;line-height:1.45">${t.d}</div>${raw(t.tip ? html`<div class="small" style="color:var(--moss);margin-top:2px">→ ${t.tip}</div>` : '')}</li>`).join('');
     };
     inp.oninput = draw; draw();
   },

@@ -178,3 +178,20 @@ svg.quad { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 2; 
 #updbar { position: fixed; left: 10px; right: 10px; top: calc(var(--sat) + 52px); z-index: 1200; display: flex; gap: 8px; align-items: center; padding: 10px 12px; border-radius: 14px; background: #1d3b2f; color: #fff; box-shadow: 0 6px 20px rgba(0,0,0,.25); }
 #updbar span { flex: 1; font-size: 15px; }
 #sq { padding: 10px 12px; border-radius: 10px; border: 1px solid #ccd3cf; }
+
+/* --- Saber: buscador, filtros y fichas --- */
+.ask { display: flex; gap: 8px; margin: 2px 0 10px; }
+.ask input { flex: 1; font-size: 16px; padding: 10px 12px; border-radius: 12px; border: 1px solid #ccd3cf; }
+.seg.scroll { overflow-x: auto; flex-wrap: nowrap; }
+.seg.scroll button { flex: 0 0 auto; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip-b { border: 1px solid #ccd3cf; background: #fff; border-radius: 999px; padding: 6px 11px; font-size: 14px; color: inherit; }
+.chip-b.on { background: var(--forest, #1d3b2f); color: #fff; border-color: transparent; }
+.card.traits summary { cursor: pointer; }
+.pill.bad { background: #f6d5d2; color: #8a1c12; }
+.note.danger { background: #f6d5d2; color: #6d140c; }
+select { font-size: 16px; padding: 8px 10px; border-radius: 10px; border: 1px solid #ccd3cf; background: #fff; }
+details.sub { border-top: 1px solid #e6e2d8; padding: 6px 0; }
+details.sub summary { cursor: pointer; font-weight: 600; }
+.route { border-top: 1px solid #e6e2d8; padding: 8px 0; }
+#cunotes { width: 100%; font-size: 16px; border-radius: 10px; border: 1px solid #ccd3cf; padding: 8px; }

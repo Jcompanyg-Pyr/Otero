@@ -2,7 +2,7 @@
 // IMPORTANTE: cambia VERSION en cada publicación (fecha + número). Es lo que hace que el iPhone
 // detecte la versión nueva, la descargue entera y ofrezca «Actualizar». Los datos personales
 // (IndexedDB) no se tocan nunca desde aquí.
-const VERSION = '2026.10.31-1';
+const VERSION = '2026.10.31-2';
 const APP_CACHE = 'otero-app-' + VERSION;
 const SHELL = [
   './', './index.html', './styles.css', './manifest.webmanifest',
@@ -10,8 +10,10 @@ const SHELL = [
   './lib/images/marker-icon.png', './lib/images/marker-icon-2x.png', './lib/images/marker-shadow.png', './lib/images/layers.png', './lib/images/layers-2x.png',
   './js/app.js', './js/state.js', './js/geo.js', './js/db.js', './js/sources.js', './js/layers.js', './js/zones.js', './js/ui.js', './js/point.js',
   './js/panels.js', './js/compass.js', './js/library.js', './js/diary.js', './js/identify.js', './js/settings.js', './js/climate.js',
-  './js/location.js', './js/places.js', './js/updates.js',
+  './js/location.js', './js/places.js', './js/updates.js', './js/catalog.js', './js/cuaderno.js',
   './content/species.js', './content/articles.js', './content/regions.js', './content/toponimia.js',
+  './content/traits.js', './content/sierras.js', './content/rocks.js', './content/articles/meteo.js', './content/articles/paisaje.js',
+  './content/species/mam.js', './content/species/ave.js', './content/species/arb.js', './content/species/pla.js', './content/species/rep.js', './content/species/anf.js', './content/species/ins.js', './content/species/hon.js',
   './icons/icon-192.png', './icons/icon-512.png', './icons/apple-touch-icon.png',
 ];
 const TILE_CACHE = 'otero-tiles';

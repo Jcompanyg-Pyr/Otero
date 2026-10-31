@@ -6,6 +6,7 @@ import { prepareZone, deleteZone, getZones, planTiles, estimateMB, parseGPX, bbo
 import { bboxAround, bboxKm, fmtNum } from './geo.js';
 import { BASES, OVERLAYS, likelyFrance, inSpain } from './layers.js';
 import { installedVersion, manualCheck } from './updates.js';
+import { openCuaderno } from './cuaderno.js';
 import { online } from './sources.js';
 
 export const APP_VERSION = '2'; // formato de la copia de seguridad (la versión de la app la dice sw.js)
@@ -40,9 +41,10 @@ export function openZones() {
       </div>
       <p class="kicker" style="margin-top:18px">Zonas guardadas</p>
       ${raw(zs.length ? '' : '<p class="muted">Ninguna todavía.</p>')}
-      <ul class="list">${raw(zs.map(z => html`<li><span class="k">🎒</span><div class="grow"><b>${z.name}</b><div class="tiny muted">${fmtDate(z.created, false)} · ${fmtNum(z.sizeKm?.w || 0)}×${fmtNum(z.sizeKm?.h || 0)} km · ${z.tiles || 0} trozos de mapa${z.places ? ` · ${z.places.length} nombres` : ''}${z.forecast ? ` · tiempo del ${new Date(z.forecast.fetchedAt).toLocaleDateString('es-ES')}` : ''}</div>${raw(z.errors?.length ? html`<div class="tiny" style="color:var(--red)">${z.errors.join(' · ')}</div>` : '')}</div><div class="row" style="flex-direction:column;gap:4px"><button class="btn small sec" data-go="${z.id}">Ver</button><button class="btn small sec" data-up="${z.id}">↻</button><button class="btn small sec" data-del="${z.id}" style="color:var(--red)">✕</button></div></li>`).join(''))}</ul>
+      <ul class="list">${raw(zs.map(z => html`<li><span class="k">🎒</span><div class="grow"><b>${z.name}</b><div class="tiny muted">${fmtDate(z.created, false)} · ${fmtNum(z.sizeKm?.w || 0)}×${fmtNum(z.sizeKm?.h || 0)} km · ${z.tiles || 0} trozos de mapa${z.places ? ` · ${z.places.length} nombres` : ''}${z.forecast ? ` · tiempo del ${new Date(z.forecast.fetchedAt).toLocaleDateString('es-ES')}` : ''}</div>${raw(z.errors?.length ? html`<div class="tiny" style="color:var(--red)">${z.errors.join(' · ')}</div>` : '')}</div><div class="row" style="flex-direction:column;gap:4px"><button class="btn small" data-cu="${z.id}">📖</button><button class="btn small sec" data-go="${z.id}">Ver</button><button class="btn small sec" data-up="${z.id}">↻</button><button class="btn small sec" data-del="${z.id}" style="color:var(--red)">✕</button></div></li>`).join(''))}</ul>
       ${raw(zs.length ? '<p class="tiny muted">↻ vuelve a descargar los datos y la previsión (los mapas ya bajados no se repiten).</p>' : '')}`;
     $$('[data-n]', body).forEach(b => b.onclick = () => newZone(b.dataset.n));
+    $$('[data-cu]', body).forEach(b => b.onclick = () => openCuaderno(b.dataset.cu));
     $$('[data-go]', body).forEach(b => b.onclick = () => { const z = zs.find(x => x.id === b.dataset.go); document.dispatchEvent(new CustomEvent('show-bbox', { detail: z.bbox })); });
     $$('[data-del]', body).forEach(b => b.onclick = async () => { const z = zs.find(x => x.id === b.dataset.del); if (await confirmBox(`¿Borrar la zona «${z.name}» y sus mapas?`, 'Borrar')) { await deleteZone(z); await getZones(true); redrawView(); document.dispatchEvent(new CustomEvent('data-changed')); } });
     $$('[data-up]', body).forEach(b => b.onclick = async () => { const z = zs.find(x => x.id === b.dataset.up); if (!online()) return toast('Necesitas conexión para actualizar la zona'); startDownload({ name: z.name, bbox: z.bbox, track: z.track, layers: z.layers || ['sat', 'topo', 'geo'], extraDetail: false, replaces: z }); });
@@ -123,11 +125,12 @@ async function startDownload(opts) {
     await getZones(true);
     document.dispatchEvent(new CustomEvent('data-changed'));
     b.innerHTML = html`<p class="kicker">Zona lista</p><h2 class="title">${z.name}</h2>
-      <p>${z.places?.length || 0} nombres, ${z.boundaries?.length || 0} términos municipales, ${z.farPeaks?.length || 0} picos para la brújula, relieve ${z.grid ? '✓' : '✗'}, previsión ${z.forecast ? '✓' : '✗'}, especies ${z.inat ? '✓' : '✗'}, ${z.tiles - (z.tilesFailed || 0)} trozos de mapa.</p>
+      <p>${z.places?.length || 0} nombres, ${z.cuaderno?.wiki?.length || 0} lugares y ${z.cuaderno?.routes?.length || 0} rutas en el cuaderno, ${z.boundaries?.length || 0} términos municipales, ${z.farPeaks?.length || 0} picos para la brújula, relieve ${z.grid ? '✓' : '✗'}, previsión ${z.forecast ? '✓' : '✗'}, especies ${z.inat ? '✓' : '✗'}, ${z.tiles - (z.tilesFailed || 0)} trozos de mapa.</p>
       ${raw(z.errors?.length ? html`<div class="note">Avisos: ${z.errors.join(' · ')}</div>` : '')}
       <p class="small muted">Consejo: pon el móvil en modo avión y toca un punto de la zona para comprobar que todo funciona sin cobertura.</p>
-      <button class="btn block" id="zok">Ver en el mapa</button>`;
+      <button class="btn block" id="zcu">📖 Abrir el cuaderno</button><button class="btn sec block" id="zok">Ver en el mapa</button>`;
     $('#zok', b).onclick = () => { closeSheet(); closeViews(); document.dispatchEvent(new CustomEvent('show-bbox', { detail: z.bbox })); };
+    $('#zcu', b).onclick = () => { closeSheet(); openCuaderno(z.id); };
   } catch (e) {
     if (document.body.contains(b)) b.innerHTML = html`<p class="kicker">Zona</p><h2 class="title">${e.message === 'Cancelado' ? 'Cancelado' : 'Algo falló'}</h2><p>${e.message === 'Cancelado' ? 'Lo descargado hasta ahora se queda guardado.' : e.message}</p>`;
     await getZones(true);

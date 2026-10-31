@@ -24,3 +24,16 @@ OpenStreetMap vía Overpass (varios servidores con relevo, `overpass()` en `sour
 Photon y Open-Meteo Geocoding (búsqueda, municipio de respaldo), Open-Meteo (tiempo y altitud), IGME (geología España),
 Macrostrat (geología fuera de España, orientativa), iNaturalist (especies observadas), IGN/IGN-F/OpenTopoMap (mapas).
 Toda petición debe tener tiempo máximo y distinguir «sin datos» de «no se pudo consultar».
+
+## Biblioteca («Saber»)
+- Fichas: `content/species/<grupo>.js` (mam, ave, arb, pla, rep, anf, ins, hon) y `content/rocks.js`; formato y vocabulario de
+  rasgos en `content/traits.js` (ZONAS, SUBS, TRAITS, HABITATS). Instrucciones para ampliarla: `tools/INSTRUCCIONES-CONTENIDO.md`.
+- Comprobar fichas: `LANG=en_US.UTF-8 ruby -Eutf-8:utf-8 tools/validar.rb content/species/arb.js [--gbif] [--solo-nuevas id1,id2]`
+  (formato, vocabulario, ids; con --gbif, nombre aceptado y registros por zona en GBIF).
+- Sierras: `content/sierras.js` (la app elige la caja más pequeña que contiene el punto, `content/regions.js`).
+- Explicaciones: `content/articles.js` + `content/articles/*.js`. Nombres de lugares: `content/toponimia.js`.
+- «Pregúntale a Otero» (`js/catalog.js`): búsqueda sin conexión con sinónimos, rasgos, sierras, altitud e intención. No es una IA
+  generativa: nunca debe inventar respuestas, solo mostrar fichas y explicaciones que encajan.
+- Cuaderno de salida (`js/cuaderno.js`): Wikipedia, rutas (Waymarked Trails + API de OpenStreetMap), rocas (IGME/Macrostrat),
+  especies (iNaturalist) guardados en la zona (`zone.cuaderno`).
+- Sin node: para comprobar que un archivo JS es válido, `osascript -l JavaScript` sobre una copia con `export` cambiado por `var`.

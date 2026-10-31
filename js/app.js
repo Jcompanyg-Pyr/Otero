@@ -15,6 +15,7 @@ import { fmtNum, inBBox } from './geo.js';
 import { locate, quality, fmtAcc, isFresh } from './location.js';
 import { openSearch, toggleFavorite } from './places.js';
 import { initUpdates } from './updates.js';
+import { openCuaderno } from './cuaderno.js';
 
 const L = window.L;
 
@@ -75,6 +76,8 @@ async function drawData() {
   if (show.zones) for (const z of await getZones()) {
     L.rectangle([[z.bbox.s, z.bbox.w], [z.bbox.n, z.bbox.e]], { color: '#c47d2c', weight: 1.5, dashArray: '6 5', fill: false, interactive: false }).addTo(groups.zones);
     if (z.track) L.polyline(z.track, { color: '#e2533b', weight: 3, opacity: .85, interactive: false }).addTo(groups.zones);
+    // rutas señalizadas del cuaderno
+    for (const r of z.cuaderno?.routes || []) if (r.geom) L.polyline(r.geom, { color: '#7b3fa0', weight: 2.5, opacity: .8, dashArray: '6 4' }).bindTooltip(`${r.ref ? r.ref + ' · ' : ''}${r.name}`, { sticky: true }).addTo(groups.zones);
   }
   drawNames();
 }
@@ -287,7 +290,7 @@ async function updateZoneChip() {
   const z = (await getZones()).find(z => inBBox(z.bbox, c.lat, c.lng));
   const chip = $('#zonechip');
   chip.classList.toggle('hidden', !z);
-  if (z) { chip.className = 'chip zone'; chip.textContent = `🎒 ${z.name}`; chip.onclick = () => { setTab('more', false); openZones(); }; }
+  if (z) { chip.className = 'chip zone'; chip.textContent = `📖 ${z.name}`; chip.onclick = () => openCuaderno(z.id); }
 }
 window.addEventListener('online', updateNet); window.addEventListener('offline', updateNet);
 updateNet(); updateZoneChip(); drawData();

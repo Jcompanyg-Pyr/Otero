@@ -1,6 +1,8 @@
 // Explicaciones del paisaje. Nivel: divulgación seria, sin dar nada por sabido.
 // Los bloques <div data-int="..."> se convierten en esquemas interactivos (ver library.js).
-export const ARTICLES = [
+import meteo from './articles/meteo.js';
+import paisaje from './articles/paisaje.js';
+const BASE = [
 {
   id: 'picos-lomas', em: '⛰️', kicker: 'Relieve', title: 'Por qué el Pirineo tiene picos y Teruel tiene muelas',
   lead: 'Las dos cordilleras nacieron en el mismo empujón de placas, más o menos a la vez. Y sin embargo una parece una sierra de dientes y la otra una mesa gigante. La diferencia está en dónde les tocó el golpe, de qué roca están hechas y qué herramienta las ha esculpido después.',
@@ -173,4 +175,6 @@ export const ARTICLES = [
 },
 ];
 
+// Explicaciones nuevas en content/articles/*.js
+export const ARTICLES = [...BASE, ...meteo, ...paisaje];
 export const articleById = id => ARTICLES.find(a => a.id === id);

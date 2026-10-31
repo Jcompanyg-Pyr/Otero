@@ -3,6 +3,7 @@ import { tilesForBBox, inBBox, bboxKm } from './geo.js';
 import { BASES, OVERLAYS } from './layers.js';
 import { db, uid } from './db.js';
 import { zoneData, elevGrid, forecast, inatSpecies, elevations } from './sources.js';
+import { buildCuaderno } from './cuaderno.js';
 
 export const TILE_CACHE = 'otero-tiles';
 
@@ -49,6 +50,8 @@ export async function prepareZone({ name, bbox, track, layers, extraDetail }, on
     const km = Math.max(5, Math.min(25, Math.round(Math.max(zone.sizeKm.w, zone.sizeKm.h) / 2 + 3)));
     zone.inat = await inatSpecies(c[0], c[1], km);
   } catch (e) { errors.push('Especies: ' + e.message); }
+  // Cuaderno: lugares (Wikipedia), rutas señalizadas y rocas, para leer sin conexión
+  try { zone.cuaderno = await buildCuaderno(zone, s => report(s, 0, 0), signal); } catch (e) { if (e.message === 'Cancelado') throw e; errors.push('Cuaderno: ' + e.message); }
   await db.put('zones', zone);
 
   // 2. Teselas de mapa

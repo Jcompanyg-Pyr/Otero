@@ -1,5 +1,7 @@
 // Regiones naturales con una explicación de su paisaje. Se eligen por coordenadas (aproximadas).
-export const REGIONS = [
+import { SIERRAS } from './sierras.js';
+// Regiones originales (Teruel y Pirineo): se usan solo si content/sierras.js está vacío.
+const OLD = [
   {
     id: 'gudar', name: 'Sierra de Gúdar', group: 'iberico', box: { s: 40.18, n: 40.56, w: -0.92, e: -0.33 },
     summary: 'Macizo del Sistema Ibérico turolense que culmina en Peñarroya, algo por encima de los 2.000 m. Calizas y margas del Jurásico y Cretácico, plegadas con suavidad y arrasadas por una erosión muy larga: por eso predominan las muelas, lomas amplias y altiplanos, cortados por barrancos profundos (Valbona, Linares, Alcalá…).',
@@ -44,6 +46,15 @@ export const REGIONS = [
   },
 ];
 
+// Sierras de toda España (content/sierras.js). «group» = zona natural (ZONAS en traits.js) que usan las fichas.
+export const REGIONS = (SIERRAS.length ? SIERRAS : OLD).map(r => ({ ...r, group: r.zona || r.group, boxes: r.boxes || [r.box] }));
+
+const area = b => (b.n - b.s) * (b.e - b.w);
+// La sierra más concreta (caja más pequeña) que contiene el punto
 export function regionAt(lat, lon) {
-  return REGIONS.find(r => lat >= r.box.s && lat <= r.box.n && lon >= r.box.w && lon <= r.box.e) || null;
+  let best = null, bestA = Infinity;
+  for (const r of REGIONS) for (const b of r.boxes) {
+    if (lat >= b.s && lat <= b.n && lon >= b.w && lon <= b.e && area(b) < bestA) { best = r; bestA = area(b); }
+  }
+  return best;
 }
